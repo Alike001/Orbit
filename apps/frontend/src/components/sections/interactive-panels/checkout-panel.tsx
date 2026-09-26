@@ -10,7 +10,6 @@ export function CheckoutPanel() {
   return (
     <div className="hero-visual" aria-label="Global checkout panel">
       <div className="visual-meta">
-        <span>04 / 05</span>
         <span className="text-white/80 font-bold">EMBEDDED CHECKOUT WIDGET</span>
       </div>
 

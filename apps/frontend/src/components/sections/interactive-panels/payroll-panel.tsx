@@ -28,7 +28,6 @@ export function PayrollPanel() {
   return (
     <div className="hero-visual" aria-label="Global batch payroll panel">
       <div className="visual-meta">
-        <span>05 / 05</span>
         <span className="text-white/80 font-bold">BATCH DISBURSEMENT</span>
       </div>
 

@@ -29,7 +29,6 @@ export function UsagePanel() {
   return (
     <div className="hero-visual" aria-label="AI usage settlement panel">
       <div className="visual-meta">
-        <span>02 / 05</span>
         <span className="text-white/80 font-bold">USAGE SETTLEMENT</span>
       </div>
 

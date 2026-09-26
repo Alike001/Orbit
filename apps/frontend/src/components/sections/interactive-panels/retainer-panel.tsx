@@ -29,7 +29,6 @@ export function RetainerPanel() {
   return (
     <div className="hero-visual" aria-label="Monthly retainer pull panel">
       <div className="visual-meta">
-        <span>03 / 05</span>
         <span className="text-white/80 font-bold">RETAINER PULL</span>
       </div>
 

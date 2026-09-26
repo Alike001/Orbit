@@ -9,7 +9,6 @@ export function ReceiptPanel() {
       aria-label="Orbit recurring pull receipt animation"
     >
       <div className="visual-meta">
-        <span>01 / 05</span>
         <span className="text-white/80 font-bold">ALLOWANCE VAULT</span>
       </div>
 
