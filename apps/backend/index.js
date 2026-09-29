@@ -111,7 +111,7 @@ app.post('/trigger-pull', async (req, res) => {
             .from('subscriptions')
             .select(`
                 *,
-                plans ( merchant_id, usdc_amount )
+                plans ( merchant_id, usdc_amount, interval_seconds )
             `)
             .eq('id', subscription_id)
             .single();
@@ -175,8 +175,8 @@ app.post('/trigger-pull', async (req, res) => {
         // to confirm success before updating the database.
 
         // 5. Update next_billing_date in database
-        const nextBilling = new Date();
-        nextBilling.setMonth(nextBilling.getMonth() + 1); // rough +1 month for example
+        const pullTime = new Date();
+        const nextBilling = new Date(pullTime.getTime() + Number(sub.plans.interval_seconds) * 1000);
 
         await supabase
             .from('subscriptions')
