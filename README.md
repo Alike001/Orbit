@@ -394,7 +394,7 @@ Environment: see `apps/backend/.env.example` (`ORBIT_CONTRACT_ID`, `SOROBAN_RPC_
 
 ### 7.3 Checkout Widget SDK
 
-`packages/checkout-widget`: the `<OrbitCheckout />` React component, built with Vite. It connects Freighter and runs the `approve` + `create_vault` handshake from any merchant site.
+`packages/checkout-widget`: the `<OrbitCheckout />` React component, built with Vite. It connects Freighter and runs the `approve` + `create_vault` handshake from any merchant site. See [packages/checkout-widget/README.md](packages/checkout-widget/README.md) for setup instructions, component props, and embed examples.
 
 ---
 
