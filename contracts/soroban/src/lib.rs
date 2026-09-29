@@ -50,8 +50,20 @@ impl OrbitContract {
     ) {
         user.require_auth();
 
-        let key = VaultKey { user: user.clone(), merchant: merchant.clone() };
-        
+        assert!(
+            amount_per_interval > 0,
+            "amount_per_interval must be positive"
+        );
+        assert!(
+            interval_seconds > 0,
+            "interval_seconds must be greater than zero"
+        );
+
+        let key = VaultKey {
+            user: user.clone(),
+            merchant: merchant.clone(),
+        };
+
         let vault_data = VaultData {
             token,
             amount_per_interval,
@@ -67,8 +79,15 @@ impl OrbitContract {
     pub fn pull_funds(env: Env, user: Address, merchant: Address) {
         merchant.require_auth();
 
-        let key = VaultKey { user: user.clone(), merchant: merchant.clone() };
-        let mut vault: VaultData = env.storage().persistent().get(&key).expect("Vault does not exist");
+        let key = VaultKey {
+            user: user.clone(),
+            merchant: merchant.clone(),
+        };
+        let mut vault: VaultData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Vault does not exist");
         let current_time = env.ledger().timestamp();
 
         if vault.last_pull_timestamp != 0 {
@@ -93,12 +112,7 @@ impl OrbitContract {
     /// 3. THE SPLIT (Batch Payroll Disbursement)
     /// The merchant uploads a CSV of contractors. This function takes that array
     /// and routes the stablecoins to everyone globally in a single transaction block.
-    pub fn batch_disburse(
-        env: Env,
-        sender: Address,
-        token: Address,
-        splits: Vec<PaymentSplit>,
-    ) {
+    pub fn batch_disburse(env: Env, sender: Address, token: Address, splits: Vec<PaymentSplit>) {
         // The sender (e.g., the Agency Owner) MUST sign this transaction to approve the payroll.
         sender.require_auth();
 
