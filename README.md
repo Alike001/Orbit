@@ -392,6 +392,8 @@ Freighter is detected and connected through the official `@stellar/freighter-api
 
 Environment: see `apps/backend/.env.example` (`ORBIT_CONTRACT_ID`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE`, Supabase keys).
 
+See [apps/backend/README.md](apps/backend/README.md) for full API reference documentation, request schemas, curl examples, and error codes.
+
 ### 7.3 Checkout Widget SDK
 
 `packages/checkout-widget`: the `<OrbitCheckout />` React component, built with Vite. It connects Freighter and runs the `approve` + `create_vault` handshake from any merchant site. See [packages/checkout-widget/README.md](packages/checkout-widget/README.md) for setup instructions, component props, and embed examples.
