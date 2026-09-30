@@ -97,7 +97,7 @@ export function DeveloperSdk() {
           <div className="code-content">
             <code>
               <span className="syntax-dim">01</span>{"  "}
-              <span className="syntax-dim">// Initialize Orbit SDK</span>
+              <span className="syntax-dim">{"// Initialize Orbit SDK"}</span>
               {"\n"}
               <span className="syntax-dim">02</span>{"  "}
               <span className="syntax-white">const</span> vault ={" "}
