@@ -15,19 +15,19 @@ import {
   Copy,
   Check,
   FileSpreadsheet,
-  Users,
   ShieldCheck,
+  X,
 } from "lucide-react";
-import { PayrollRecipient } from "../dashboard-types";
 import Papa from "papaparse";
 import { StrKey } from "@stellar/stellar-sdk";
+import { PayrollRecipient } from "../dashboard-types";
 
 const SAMPLE_RECIPIENTS: PayrollRecipient[] = [
   {
     id: "rec_charlie_01",
     name: "Charlie Vance",
     role: "Smart Contract Lead",
-    walletAddress: "GCHAR7V4D8L4C0F6A2H8J1K5W9Y3K7M2P6B3XQ4Z7M5",
+    walletAddress: "GD3AGJRMLRKRTQKBVMLT6AW34IZZ3IEALRHTY247BBNISVS452SMQDPG",
     amount: 500.0,
     network: "stellar-testnet",
     status: "ready",
@@ -36,7 +36,7 @@ const SAMPLE_RECIPIENTS: PayrollRecipient[] = [
     id: "rec_sarah_02",
     name: "Sarah Lin",
     role: "Frontend Engineer",
-    walletAddress: "GSAR49A1H5J8K2GB3XQ4Z7M5W8Y2K6T1R9P0V4N8D2",
+    walletAddress: "GBXCR3C3CEKQ3UYNA3UUN2BUBB3GOGWN4VPR2FJ2G2WFQJLFVKJXDJ3A",
     amount: 400.0,
     network: "stellar-testnet",
     status: "ready",
@@ -45,7 +45,7 @@ const SAMPLE_RECIPIENTS: PayrollRecipient[] = [
     id: "rec_david_03",
     name: "David Kim",
     role: "UI/UX Designer",
-    walletAddress: "GDAV84N2L7C3F9A1H5J8K2GB3XQ4Z7M5W8Y2K6T1",
+    walletAddress: "GAJ7J66Q66THHJ22WTBBEJUHHLVD7RZZW6KTVQDBBQYXRPVC4UFFQFDR",
     amount: 200.0,
     network: "stellar-testnet",
     status: "ready",
@@ -54,18 +54,23 @@ const SAMPLE_RECIPIENTS: PayrollRecipient[] = [
     id: "rec_elena_04",
     name: "Elena Rostova",
     role: "Community Manager",
-    walletAddress: "GELE93M4K8P1T6R9V0D2L7C3F9A1H5J8K2W8Y2K5",
+    walletAddress: "GBDXVD27PJS4PVC5USFBSJUTTYVXIH6MS6MM6M2IDCXJWJHEPRTTIQNP",
     amount: 100.0,
     network: "stellar-testnet",
     status: "ready",
   },
 ];
 
+interface RowValidationError {
+  row: number;
+  reason: string;
+}
+
 export function PayrollView() {
   const [recipients, setRecipients] = useState<PayrollRecipient[]>(SAMPLE_RECIPIENTS);
   const [isExecuting, setIsExecuting] = useState(false);
   const [disbursedSuccess, setDisbursedSuccess] = useState<string | null>(null);
-  const [csvErrors, setCsvErrors] = useState<string[]>([]);
+  const [uploadErrors, setUploadErrors] = useState<RowValidationError[]>([]);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,15 +93,16 @@ export function PayrollView() {
   const handleLoadSampleCSV = () => {
     setRecipients(SAMPLE_RECIPIENTS);
     setDisbursedSuccess(null);
+    setUploadErrors([]);
   };
 
   const handleDownloadTemplate = () => {
     const csvContent =
       "data:text/csv;charset=utf-8," +
-      "Name,Role,StellarWallet,AmountUSDC\r\n" +
-      "Charlie Vance,Smart Contract Lead,GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,500\r\n" +
-      "Sarah Lin,Frontend Engineer,GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN,400\r\n" +
-      "David Kim,UI/UX Designer,GCKFBEIYV2U22IO2GUOWGQPTZX2I6DBA7EIEWIXKXZQJ2D3XN6XU4X7P,200\r\n";
+      "Name,Role,StellarWallet,AmountUSDC\n" +
+      "Charlie Vance,Smart Contract Lead,GD3AGJRMLRKRTQKBVMLT6AW34IZZ3IEALRHTY247BBNISVS452SMQDPG,500\n" +
+      "Sarah Lin,Frontend Engineer,GBXCR3C3CEKQ3UYNA3UUN2BUBB3GOGWN4VPR2FJ2G2WFQJLFVKJXDJ3A,400\n" +
+      "David Kim,UI/UX Designer,GAJ7J66Q66THHJ22WTBBEJUHHLVD7RZZW6KTVQDBBQYXRPVC4UFFQFDR,200\n";
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -110,95 +116,107 @@ export function PayrollView() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setCsvErrors([]);
-
     Papa.parse<string[]>(file, {
       skipEmptyLines: "greedy",
       complete: (results) => {
         const rows = results.data;
         if (!rows || rows.length === 0) {
-          setCsvErrors(["The uploaded CSV file is empty."]);
+          setUploadErrors([{ row: 0, reason: "The uploaded CSV file is empty" }]);
           return;
         }
 
-        const errors: string[] = [];
+        const errors: RowValidationError[] = [];
         const validRecipients: PayrollRecipient[] = [];
 
-        // Check if first row is a header row
-        const firstRowStr = rows[0].join(" ").toLowerCase();
+        // Check if the first row is a header row
+        // A header row contains header keywords and does not have a valid Stellar Ed25519 key
+        const firstRowText = rows[0]?.join(" ").toLowerCase() || "";
+        const firstRowCol1 = rows[0]?.[1]?.trim() || "";
+        const firstRowCol2 = rows[0]?.[2]?.trim() || "";
+        const firstRowHasWallet =
+          StrKey.isValidEd25519PublicKey(firstRowCol1) ||
+          StrKey.isValidEd25519PublicKey(firstRowCol2);
+
         const hasHeader =
-          firstRowStr.includes("name") ||
-          firstRowStr.includes("wallet") ||
-          firstRowStr.includes("role") ||
-          firstRowStr.includes("amount");
+          !firstRowHasWallet &&
+          (firstRowText.includes("name") ||
+            firstRowText.includes("role") ||
+            firstRowText.includes("wallet") ||
+            firstRowText.includes("address") ||
+            firstRowText.includes("amount"));
 
         const startIdx = hasHeader ? 1 : 0;
 
         for (let i = startIdx; i < rows.length; i++) {
-          const row = rows[i];
-          const rowNum = i + 1;
+          const rowNum = i + 1; // 1-indexed row number matching file line
+          const parts = rows[i].map((p) => (typeof p === "string" ? p.trim() : ""));
 
-          if (row.length < 2) {
-            errors.push(`Row ${rowNum}: Insufficient columns (expected at least wallet address and amount).`);
+          // Skip completely empty rows
+          if (parts.length === 0 || parts.every((p) => p.length === 0)) {
             continue;
           }
 
-          let name = `Recipient ${rowNum}`;
-          let role = "Contractor";
-          let wallet = "";
-          let rawAmount = "";
+          if (parts.length < 3) {
+            errors.push({
+              row: rowNum,
+              reason: `Insufficient columns (${parts.length} found, expected at least 3: Name, [Role], StellarWallet, AmountUSDC)`,
+            });
+            continue;
+          }
 
-          if (row.length >= 4) {
-            name = row[0]?.trim() || name;
-            role = row[1]?.trim() || role;
-            wallet = row[2]?.trim() || "";
-            rawAmount = row[3]?.trim() || "";
-          } else if (row.length === 3) {
-            name = row[0]?.trim() || name;
-            wallet = row[1]?.trim() || "";
-            rawAmount = row[2]?.trim() || "";
+          const name = parts[0] || `Recipient ${rowNum}`;
+          const role = parts.length >= 4 ? parts[1] || "Contractor" : "Contractor";
+          const wallet = parts.length >= 4 ? parts[2] : parts[1];
+          const rawAmount = parts.length >= 4 ? parts[3] : parts[2];
+
+          const rowReasons: string[] = [];
+
+          // Validate wallet address with StrKey.isValidEd25519PublicKey
+          if (!wallet) {
+            rowReasons.push("Missing wallet address");
+          } else if (!StrKey.isValidEd25519PublicKey(wallet)) {
+            rowReasons.push(`Invalid Stellar wallet address "${wallet}"`);
+          }
+
+          // Validate amount: reject missing, zero, or negative amounts
+          if (!rawAmount || rawAmount === "") {
+            rowReasons.push("Missing amount");
           } else {
-            wallet = row[0]?.trim() || "";
-            rawAmount = row[1]?.trim() || "";
+            const parsedAmount = parseFloat(rawAmount);
+            if (isNaN(parsedAmount) || !isFinite(parsedAmount)) {
+              rowReasons.push(`Unparseable amount "${rawAmount}"`);
+            } else if (parsedAmount <= 0) {
+              rowReasons.push(`Amount must be greater than zero (got ${rawAmount})`);
+            }
           }
 
-          const rowIssues: string[] = [];
-
-          if (!wallet || !StrKey.isValidEd25519PublicKey(wallet)) {
-            rowIssues.push(`invalid Stellar address "${wallet || "empty"}"`);
-          }
-
-          const parsedAmount = parseFloat(rawAmount);
-          if (!rawAmount || isNaN(parsedAmount) || parsedAmount <= 0) {
-            rowIssues.push(`invalid or non-positive amount "${rawAmount || "empty"}"`);
-          }
-
-          if (rowIssues.length > 0) {
-            errors.push(`Row ${rowNum}: ${rowIssues.join(", ")}`);
+          if (rowReasons.length > 0) {
+            errors.push({
+              row: rowNum,
+              reason: rowReasons.join(", "),
+            });
           } else {
             validRecipients.push({
-              id: `rec_csv_${i}_${Math.random().toString(36).substring(2, 6)}`,
+              id: `rec_csv_${rowNum}_${Math.random().toString(36).substring(2, 6)}`,
               name,
               role,
               walletAddress: wallet,
-              amount: parsedAmount,
+              amount: parseFloat(rawAmount),
               network: "stellar-testnet",
               status: "ready",
             });
           }
         }
 
-        if (errors.length > 0) {
-          setCsvErrors(errors);
-        }
+        setUploadErrors(errors);
 
         if (validRecipients.length > 0) {
           setRecipients(validRecipients);
           setDisbursedSuccess(null);
         }
       },
-      error: (err) => {
-        setCsvErrors([`Failed to parse CSV file: ${err.message}`]);
+      error: (error) => {
+        setUploadErrors([{ row: 0, reason: `Failed to parse CSV: ${error.message}` }]);
       },
     });
 
@@ -209,12 +227,33 @@ export function PayrollView() {
     e.preventDefault();
     if (!newName.trim() || !newWallet.trim() || !newAmount) return;
 
+    if (!StrKey.isValidEd25519PublicKey(newWallet.trim())) {
+      setUploadErrors([
+        {
+          row: 0,
+          reason: `Invalid Stellar address "${newWallet.trim()}". Must be a valid 56-character Ed25519 public key starting with G.`,
+        },
+      ]);
+      return;
+    }
+
+    const parsedAmount = parseFloat(newAmount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      setUploadErrors([
+        {
+          row: 0,
+          reason: `Invalid amount "${newAmount}". Amount must be greater than zero.`,
+        },
+      ]);
+      return;
+    }
+
     const newRec: PayrollRecipient = {
       id: `rec_man_${Math.random().toString(36).substring(2, 8)}`,
       name: newName.trim(),
       role: newRole.trim() || "Contractor",
       walletAddress: newWallet.trim(),
-      amount: parseFloat(newAmount) || 100,
+      amount: parsedAmount,
       network: "stellar-testnet",
       status: "ready",
     };
@@ -225,6 +264,7 @@ export function PayrollView() {
     setNewWallet("");
     setNewAmount("");
     setIsAddingManual(false);
+    setUploadErrors([]);
   };
 
   const handleRemove = (id: string) => {
@@ -311,31 +351,6 @@ export function PayrollView() {
         </div>
       </div>
 
-      {/* CSV Validation Error Banner */}
-      {csvErrors.length > 0 && (
-        <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-xs text-red-950 flex items-start gap-3 animate-in fade-in duration-200 shadow-xs">
-          <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
-          <div className="flex-1 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-red-900">
-                CSV validation issues ({csvErrors.length} {csvErrors.length === 1 ? "row" : "rows"} skipped):
-              </span>
-              <button
-                onClick={() => setCsvErrors([])}
-                className="text-red-700 hover:text-red-900 font-medium underline cursor-pointer"
-              >
-                Dismiss
-              </button>
-            </div>
-            <ul className="list-disc list-inside space-y-1 text-red-800 font-mono text-[11px] max-h-32 overflow-y-auto">
-              {csvErrors.map((err, idx) => (
-                <li key={idx}>{err}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-
       {/* Success Notification Banner */}
       {disbursedSuccess && (
         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 flex items-start gap-3 animate-in fade-in duration-200 shadow-xs">
@@ -344,6 +359,37 @@ export function PayrollView() {
             <span className="font-semibold">Atomic Ledger Execution Confirmed:</span>{" "}
             {disbursedSuccess}
           </div>
+        </div>
+      )}
+
+      {/* CSV Validation Error Banner */}
+      {uploadErrors.length > 0 && (
+        <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-xs text-red-950 space-y-2 animate-in fade-in duration-200 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 font-semibold text-red-700">
+              <AlertCircle size={16} className="shrink-0 text-red-600" />
+              <span>
+                {uploadErrors.length} {uploadErrors.length === 1 ? "row" : "rows"} rejected due to validation errors (not marked ready):
+              </span>
+            </div>
+            <button
+              onClick={() => setUploadErrors([])}
+              className="p-1 rounded text-red-400 hover:text-red-700 hover:bg-red-100 transition-colors cursor-pointer"
+              title="Dismiss errors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <ul className="list-disc list-inside space-y-1 pl-1 text-red-800 font-mono text-[11px] max-h-48 overflow-y-auto">
+            {uploadErrors.map((err, idx) => (
+              <li key={idx}>
+                {err.row > 0 ? (
+                  <span className="font-semibold text-red-900">Row {err.row}: </span>
+                ) : null}
+                <span>{err.reason}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
