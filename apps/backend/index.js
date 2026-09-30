@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
+const { z } = require('zod');
+const { StrKey, Keypair, rpc, Networks, TransactionBuilder, Contract, xdr } = require('@stellar/stellar-sdk');
 
 const app = express();
 app.use(cors());
@@ -10,19 +12,66 @@ app.use(express.json());
 // Initialize Supabase Client
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; // Using service role for backend logic
-const supabase = createClient(supabaseUrl, supabaseKey);
+let defaultSupabase = null;
+if (supabaseUrl && supabaseKey) {
+    defaultSupabase = createClient(supabaseUrl, supabaseKey);
+}
+
+const getSupabase = () => app.locals.supabase || defaultSupabase;
+
+// ==========================================
+// VALIDATION SCHEMAS
+// ==========================================
+
+const stellarAddressSchema = z.string().refine(
+    (val) => StrKey.isValidEd25519PublicKey(val),
+    { message: "must be a valid Stellar Ed25519 public address" }
+);
+
+const createPlanSchema = z.object({
+    merchant_id: z.string().uuid("merchant_id must be a valid UUID"),
+    name: z.string().trim().min(1, "name cannot be empty"),
+    usdc_amount: z.coerce.number().positive("usdc_amount must be greater than 0"),
+    interval_seconds: z.coerce.number().int().positive("interval_seconds must be a positive integer"),
+});
+
+const getPlanParamsSchema = z.object({
+    id: z.string().uuid("id parameter must be a valid UUID"),
+});
+
+const getSubscribersQuerySchema = z.object({
+    merchant_id: z.string().uuid("merchant_id must be a valid UUID"),
+});
+
+const createSubscriptionSchema = z.object({
+    plan_id: z.string().uuid("plan_id must be a valid UUID"),
+    customer_wallet_address: stellarAddressSchema,
+});
+
+const triggerPullSchema = z.object({
+    subscription_id: z.string().uuid("subscription_id must be a valid UUID"),
+    merchant_secret: z.string().min(1, "merchant_secret is required"),
+});
+
+const formatZodError = (err) => {
+    const issue = err.issues[0];
+    const field = issue.path.join('.') || 'input';
+    return `Invalid input on ${field}: ${issue.message}`;
+};
 
 // ==========================================
 // ROUTE 1: POST /plans (Create a new pricing plan)
 // ==========================================
 app.post('/plans', async (req, res) => {
+    const parseResult = createPlanSchema.safeParse(req.body);
+    if (!parseResult.success) {
+        return res.status(400).json({ error: formatZodError(parseResult.error) });
+    }
+
     try {
-        const { merchant_id, name, usdc_amount, interval_seconds } = req.body;
-        
-        // Basic validation
-        if (!merchant_id || !name || !usdc_amount || !interval_seconds) {
-            return res.status(400).json({ error: "Missing required fields" });
-        }
+        const { merchant_id, name, usdc_amount, interval_seconds } = parseResult.data;
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
 
         const { data, error } = await supabase
             .from('plans')
@@ -43,8 +92,15 @@ app.post('/plans', async (req, res) => {
 // ROUTE 2: GET /plans/:id (Fetch plan details for Checkout Widget)
 // ==========================================
 app.get('/plans/:id', async (req, res) => {
+    const parseResult = getPlanParamsSchema.safeParse(req.params);
+    if (!parseResult.success) {
+        return res.status(400).json({ error: formatZodError(parseResult.error) });
+    }
+
     try {
-        const { id } = req.params;
+        const { id } = parseResult.data;
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
 
         const { data, error } = await supabase
             .from('plans')
@@ -66,16 +122,17 @@ app.get('/plans/:id', async (req, res) => {
 // ROUTE 3: GET /subscribers (Fetch active subscribers for dashboard)
 // ==========================================
 app.get('/subscribers', async (req, res) => {
-    try {
-        // In a real app, you'd extract the merchant_id from the authenticated user's session token.
-        // For MVP testing, we can pass merchant_id in the query params.
-        const { merchant_id } = req.query;
-        
-        if (!merchant_id) {
-            return res.status(400).json({ error: "Missing merchant_id query parameter" });
-        }
+    const parseResult = getSubscribersQuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
+        return res.status(400).json({ error: formatZodError(parseResult.error) });
+    }
 
-        // We need to find all subscriptions tied to plans owned by this merchant
+    try {
+        const { merchant_id } = parseResult.data;
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
+
+        // Find all subscriptions tied to plans owned by this merchant
         const { data, error } = await supabase
             .from('subscriptions')
             .select(`
@@ -96,15 +153,16 @@ app.get('/subscribers', async (req, res) => {
 // ==========================================
 // ROUTE 4: POST /trigger-pull (The Blockchain Bridge)
 // ==========================================
-const { Keypair, rpc, Networks, TransactionBuilder, Contract, xdr, Asset } = require('@stellar/stellar-sdk');
-
 app.post('/trigger-pull', async (req, res) => {
-    try {
-        const { subscription_id, merchant_secret } = req.body;
+    const parseResult = triggerPullSchema.safeParse(req.body);
+    if (!parseResult.success) {
+        return res.status(400).json({ error: formatZodError(parseResult.error) });
+    }
 
-        if (!subscription_id || !merchant_secret) {
-            return res.status(400).json({ error: "Missing subscription_id or merchant_secret" });
-        }
+    try {
+        const { subscription_id, merchant_secret } = parseResult.data;
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
 
         // 1. Fetch Subscription and Plan data from Supabase
         const { data: sub, error: subError } = await supabase
@@ -129,20 +187,25 @@ app.post('/trigger-pull', async (req, res) => {
         if (merchantError) throw merchantError;
 
         // 2. Setup Stellar SDK (Testnet)
-        const server = new rpc.Server('https://soroban-testnet.stellar.org');
-        const merchantKeypair = Keypair.fromSecret(merchant_secret);
+        let merchantKeypair;
+        try {
+            merchantKeypair = Keypair.fromSecret(merchant_secret);
+        } catch {
+            return res.status(400).json({ error: "Invalid merchant_secret: not a valid Stellar secret key" });
+        }
         
         // Verify the provided secret matches the merchant in the database
         if (merchantKeypair.publicKey() !== merchant.wallet_address) {
             return res.status(401).json({ error: "Merchant secret does not match the plan owner's address" });
         }
 
-        // NOTE: In a real app, you would read the ORBIT_CONTRACT_ID from .env
         const ORBIT_CONTRACT_ID = process.env.ORBIT_CONTRACT_ID; 
         if (!ORBIT_CONTRACT_ID) {
             return res.status(500).json({ error: "ORBIT_CONTRACT_ID not set in .env" });
         }
 
+        const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
+        const server = new rpc.Server(rpcUrl);
         const contract = new Contract(ORBIT_CONTRACT_ID);
         
         // 3. Build the Soroban Transaction
@@ -150,7 +213,7 @@ app.post('/trigger-pull', async (req, res) => {
         
         const tx = new TransactionBuilder(account, {
             fee: "1000000",
-            networkPassphrase: Networks.TESTNET
+            networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || Networks.TESTNET
         })
         .addOperation(contract.call("pull_funds", 
             xdr.ScVal.scvAddress(xdr.ScAddress.scAddressTypeAccount(Keypair.fromPublicKey(sub.customer_wallet_address).xdrPublicKey())), // User
@@ -169,10 +232,6 @@ app.post('/trigger-pull', async (req, res) => {
         if (txResponse.status !== "PENDING" && txResponse.status !== "SUCCESS") {
              throw new Error(`Transaction failed: ${JSON.stringify(txResponse)}`);
         }
-
-        // Wait for the transaction to complete
-        // In a production app, you'd want to poll `server.getTransaction(txResponse.hash)` 
-        // to confirm success before updating the database.
 
         // 5. Update next_billing_date in database
         const pullTime = new Date();
@@ -198,16 +257,16 @@ app.post('/trigger-pull', async (req, res) => {
 // ROUTE 5: POST /subscriptions (Create Subscription after Handshake)
 // ==========================================
 app.post('/subscriptions', async (req, res) => {
-    try {
-        const { plan_id, customer_wallet_address } = req.body;
-        
-        if (!plan_id || !customer_wallet_address) {
-            return res.status(400).json({ error: "Missing required fields" });
-        }
+    const parseResult = createSubscriptionSchema.safeParse(req.body);
+    if (!parseResult.success) {
+        return res.status(400).json({ error: formatZodError(parseResult.error) });
+    }
 
-        // Calculate next billing date (immediately or 1 month from now depending on logic)
-        // Since the customer just approved the allowance, the merchant will pull funds right after.
-        // We set next_billing_date to now so the cron job can pick it up immediately.
+    try {
+        const { plan_id, customer_wallet_address } = parseResult.data;
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
+
         const nextBillingDate = new Date().toISOString();
 
         const { data, error } = await supabase
@@ -226,6 +285,10 @@ app.post('/subscriptions', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-    console.log(`Orbit Merchant API running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Orbit Merchant API running on http://localhost:${PORT}`);
+    });
+}
+
+module.exports = app;

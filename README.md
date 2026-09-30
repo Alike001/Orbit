@@ -390,7 +390,7 @@ Freighter is detected and connected through the official `@stellar/freighter-api
 | `GET` | `/subscribers?merchant_id=` | Subscriptions across a merchant's plans |
 | `POST` | `/trigger-pull` | Build, simulate (`prepareTransaction`), sign and submit `pull_funds` |
 
-Environment: see `apps/backend/.env.example` (`ORBIT_CONTRACT_ID`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE`, Supabase keys).
+Environment: see `apps/backend/.env.example` (`ORBIT_CONTRACT_ID`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE`, Supabase keys). See [apps/backend/README.md](apps/backend/README.md) for the full API reference, request/response examples, and error responses.
 
 See [apps/backend/README.md](apps/backend/README.md) for full API reference documentation, request schemas, curl examples, and error codes.
 

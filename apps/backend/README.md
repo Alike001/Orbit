@@ -1,90 +1,66 @@
-# Orbit Merchant API Reference
+# Orbit Merchant API
 
-The Merchant API provides REST endpoints for merchants, the Checkout Widget, and recurring billing keepers to manage pricing plans, customer subscriptions, and on-chain pull payment transactions.
+The Orbit Merchant API (`apps/backend/index.js`) is an Express service that manages pricing plans, customer subscriptions, and automated on-chain pull executions on Stellar Soroban. Data is persisted in Supabase using the tables defined in `apps/backend/schema.sql` (`merchants`, `plans`, `subscriptions`).
 
-## Table of Contents
+## Setup and Configuration
 
-- [Overview](#overview)
-- [Base URL & Setup](#base-url--setup)
-- [Authentication & Validation](#authentication--validation)
-- [Endpoints](#endpoints)
-  - [POST /plans](#post-plans)
-  - [GET /plans/:id](#get-plansid)
-  - [GET /subscribers](#get-subscribers)
-  - [POST /trigger-pull](#post-trigger-pull)
-  - [POST /subscriptions](#post-subscriptions)
-- [Database Schema Reference](#database-schema-reference)
+### Prerequisites
 
----
+- Node.js 18+ and npm 9+
+- A Supabase project with tables initialized via `apps/backend/schema.sql`
+- A deployed Orbit Soroban contract on Stellar Testnet
 
-## Overview
+### Environment Variables
 
-The Merchant API acts as an off-chain coordinator that connects Supabase storage with the Orbit Soroban smart contract on Stellar Testnet.
+Copy `apps/backend/.env.example` to `apps/backend/.env` and configure:
 
-Key responsibilities:
-- Managing pricing tiers (`plans`)
-- Querying subscriber cohorts (`subscribers`)
-- Recording subscription entries following client handshake transactions (`subscriptions`)
-- Building, signing, and submitting the `pull_funds` contract invocation (`trigger-pull`)
+| Variable | Description | Example |
+|---|---|---|
+| `PORT` | Local port for Express server (defaults to 3001) | `3001` |
+| `SUPABASE_URL` | Supabase project URL | `https://xyzcompany.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role secret key | `eyJhbGciOi...` |
+| `ORBIT_CONTRACT_ID` | Deployed Orbit Soroban smart contract ID | `CAZBZBUWBSQYK2RZ6WHMXVDLIQHSU5WD7ANZYL6HLNSCRUOTNYCDYQNG` |
 
----
-
-## Base URL & Setup
-
-By default, the server listens on port `3001` (or the `PORT` environment variable).
-
-```
-http://localhost:3001
-```
-
-### Required Environment Variables
-
-Before starting the server, configure `apps/backend/.env`:
-
-| Variable | Description |
-|---|---|
-| `PORT` | Local port for Express (default: `3001`) |
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role secret key |
-| `ORBIT_CONTRACT_ID` | Deployed Orbit Soroban contract address |
-
-Run the service:
+### Running the API
 
 ```bash
 cd apps/backend
 npm install
-npm run dev
+node index.js
 ```
 
----
-
-## Authentication & Validation
-
-- `GET` endpoints are unauthenticated for MVP integration with the frontend dashboard and checkout widget.
-- `POST /trigger-pull` validates that the caller provides the private Stellar secret key (`merchant_secret`) matching the public wallet address of the plan's merchant.
-
-All requests containing JSON bodies must include the `Content-Type: application/json` header.
+The service runs at `http://localhost:3001`.
 
 ---
 
-## Endpoints
+## API Routes Overview
 
-### POST /plans
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/plans` | Create a new recurring pricing plan |
+| `GET` | `/plans/:id` | Fetch plan and merchant details |
+| `GET` | `/subscribers` | List active subscribers for a merchant |
+| `POST` | `/trigger-pull` | Execute on-chain pull payment on Soroban |
+| `POST` | `/subscriptions` | Record a customer subscription after handshake |
 
-Creates a new subscription pricing plan for a merchant.
+---
 
-- **Method:** `POST`
-- **Path:** `/plans`
-- **Purpose:** Registers a plan with designated recurring payment amount and billing frequency in seconds.
+## Route Reference
+
+### 1. POST /plans
+
+#### Purpose
+Creates a new recurring subscription plan for a merchant.
 
 #### Request Body
+Content-Type: `application/json`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `merchant_id` | string (UUID) | Yes | Foreign key referencing `merchants.id`. |
-| `name` | string | Yes | Display name for the tier (e.g. "Pro Tier"). |
-| `usdc_amount` | number / numeric | Yes | Price billed per interval in USDC. |
-| `interval_seconds` | number / integer | Yes | Billing interval duration in seconds (e.g. `2592000` for 30 days). |
+| `merchant_id` | `string` (UUID) | Yes | Unique ID of the merchant creating the plan (must exist in `merchants` table). |
+| `name` | `string` | Yes | Name of the subscription plan (e.g., `"Pro Plan - 29 USDC/month"`). |
+| `usdc_amount` | `number` | Yes | Billing amount in USDC per interval (e.g., `29`). |
+| `interval_seconds` | `number` | Yes | Cadence between billing pulls in seconds (e.g., `2592000` for 30 days). |
 
 #### Example Request
 
@@ -92,79 +68,81 @@ Creates a new subscription pricing plan for a merchant.
 curl -X POST http://localhost:3001/plans \
   -H "Content-Type: application/json" \
   -d '{
-    "merchant_id": "7f8b9a10-b2c3-4d5e-a6f7-112233445566",
-    "name": "Pro Plan",
+    "merchant_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "name": "Pro Plan - 29 USDC/month",
     "usdc_amount": 29,
     "interval_seconds": 2592000
   }'
 ```
 
-#### Success Response (201 Created)
+#### Example Success Response
+Status: `201 Created`
 
 ```json
 {
   "message": "Plan created successfully",
   "plan": {
-    "id": "e0b8e99b-5136-4d1d-9351-91a5db4fb056",
-    "merchant_id": "7f8b9a10-b2c3-4d5e-a6f7-112233445566",
-    "name": "Pro Plan",
+    "id": "e2a0b3df-2015-4672-9721-a1e94c1408d7",
+    "merchant_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "name": "Pro Plan - 29 USDC/month",
     "usdc_amount": 29,
     "interval_seconds": 2592000,
-    "created_at": "2026-09-30T02:00:00.000Z"
+    "created_at": "2026-09-30T00:00:00.000Z"
   }
 }
 ```
 
 #### Error Responses
 
-- **400 Bad Request:** Missing one or more required fields (`merchant_id`, `name`, `usdc_amount`, `interval_seconds`).
+- `400 Bad Request`
+  Returned when any required field (`merchant_id`, `name`, `usdc_amount`, `interval_seconds`) is missing.
   ```json
   {
     "error": "Missing required fields"
   }
   ```
-- **500 Internal Server Error:** Database insert error or unhandled server exception.
+
+- `500 Internal Server Error`
+  Returned if the database query fails or a foreign key constraint is violated.
   ```json
   {
-    "error": "Database connection error"
+    "error": "insert or update on table \"plans\" violates foreign key constraint \"plans_merchant_id_fkey\""
   }
   ```
 
 ---
 
-### GET /plans/:id
+### 2. GET /plans/:id
 
-Retrieves plan specifications and parent merchant wallet details.
+#### Purpose
+Fetches details of a specific plan along with the associated merchant's name and Stellar wallet address. Used by checkout widgets and payment pages.
 
-- **Method:** `GET`
-- **Path:** `/plans/:id`
-- **Purpose:** Supplies pricing terms and merchant destination wallet address to the Checkout Widget SDK and hosted checkout pages.
-
-#### Path Parameters
+#### URL Parameters
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `id` | string (UUID) | Yes | Unique identifier of the plan. |
+| `id` | `string` (UUID) | Yes | Unique ID of the plan to fetch. |
 
 #### Example Request
 
 ```bash
-curl -X GET http://localhost:3001/plans/e0b8e99b-5136-4d1d-9351-91a5db4fb056
+curl http://localhost:3001/plans/e2a0b3df-2015-4672-9721-a1e94c1408d7
 ```
 
-#### Success Response (200 OK)
+#### Example Success Response
+Status: `200 OK`
 
 ```json
 {
   "plan": {
-    "id": "e0b8e99b-5136-4d1d-9351-91a5db4fb056",
-    "merchant_id": "7f8b9a10-b2c3-4d5e-a6f7-112233445566",
-    "name": "Pro Plan",
+    "id": "e2a0b3df-2015-4672-9721-a1e94c1408d7",
+    "merchant_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "name": "Pro Plan - 29 USDC/month",
     "usdc_amount": 29,
     "interval_seconds": 2592000,
-    "created_at": "2026-09-30T02:00:00.000Z",
+    "created_at": "2026-09-30T00:00:00.000Z",
     "merchants": {
-      "name": "Orbit SaaS",
+      "name": "Acme SaaS",
       "wallet_address": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
     }
   }
@@ -173,56 +151,57 @@ curl -X GET http://localhost:3001/plans/e0b8e99b-5136-4d1d-9351-91a5db4fb056
 
 #### Error Responses
 
-- **404 Not Found:** Plan with requested UUID does not exist.
+- `404 Not Found`
+  Returned if no plan exists with the given ID.
   ```json
   {
     "error": "Plan not found"
   }
   ```
-- **500 Internal Server Error:** Supabase lookup error or invalid UUID format.
+
+- `500 Internal Server Error`
+  Returned if the database query fails or the ID syntax is invalid.
   ```json
   {
-    "error": "invalid input syntax for type uuid"
+    "error": "invalid input syntax for type uuid: \"invalid-id\""
   }
   ```
 
 ---
 
-### GET /subscribers
+### 3. GET /subscribers
 
-Lists active subscriptions across all plans owned by a merchant.
-
-- **Method:** `GET`
-- **Path:** `/subscribers`
-- **Purpose:** Populates subscriber management tables and billing schedules in the Merchant Dashboard.
+#### Purpose
+Fetches all active subscriptions across plans owned by a specific merchant, used by the merchant dashboard.
 
 #### Query Parameters
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `merchant_id` | string (UUID) | Yes | Identifier of the merchant whose subscribers are queried. |
+| `merchant_id` | `string` (UUID) | Yes | Unique ID of the merchant whose subscribers are queried. |
 
 #### Example Request
 
 ```bash
-curl -X GET "http://localhost:3001/subscribers?merchant_id=7f8b9a10-b2c3-4d5e-a6f7-112233445566"
+curl "http://localhost:3001/subscribers?merchant_id=9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
 ```
 
-#### Success Response (200 OK)
+#### Example Success Response
+Status: `200 OK`
 
 ```json
 {
   "subscribers": [
     {
-      "id": "4a7f2e18-6c51-41b9-9cf3-90d1bf379b32",
-      "plan_id": "e0b8e99b-5136-4d1d-9351-91a5db4fb056",
-      "customer_wallet_address": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      "id": "c1f7b9e0-1234-5678-9abc-def012345678",
+      "plan_id": "e2a0b3df-2015-4672-9721-a1e94c1408d7",
+      "customer_wallet_address": "GD3AGJRMLRKRTQKBVMLT6AW34IZZ3IEALRHTY247BBNISVS452SMQDPG",
       "status": "active",
-      "next_billing_date": "2026-10-30T02:00:00.000Z",
-      "created_at": "2026-09-30T02:00:00.000Z",
+      "next_billing_date": "2026-10-30T00:00:00.000Z",
+      "created_at": "2026-09-30T00:00:00.000Z",
       "plans": {
-        "merchant_id": "7f8b9a10-b2c3-4d5e-a6f7-112233445566",
-        "name": "Pro Plan",
+        "merchant_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+        "name": "Pro Plan - 29 USDC/month",
         "usdc_amount": 29
       }
     }
@@ -232,35 +211,43 @@ curl -X GET "http://localhost:3001/subscribers?merchant_id=7f8b9a10-b2c3-4d5e-a6
 
 #### Error Responses
 
-- **400 Bad Request:** `merchant_id` query parameter is missing.
+- `400 Bad Request`
+  Returned when the `merchant_id` query parameter is missing.
   ```json
   {
     "error": "Missing merchant_id query parameter"
   }
   ```
-- **500 Internal Server Error:** Database query failure.
+
+- `500 Internal Server Error`
+  Returned if the database query fails.
   ```json
   {
-    "error": "Database error details"
+    "error": "invalid input syntax for type uuid: \"invalid-merchant-id\""
   }
   ```
 
 ---
 
-### POST /trigger-pull
+### 4. POST /trigger-pull
 
-Submits an on-chain transaction invoking `pull_funds` on the Soroban smart contract.
+#### Purpose
+Executes an on-chain pull payment on the Stellar Soroban network for a given subscription.
 
-- **Method:** `POST`
-- **Path:** `/trigger-pull`
-- **Purpose:** Acts as the automated keeper/bridge. Verifies merchant ownership, builds the Soroban transaction, submits it to Stellar Testnet RPC, and updates the subscription's `next_billing_date`.
+The flow:
+1. Loads subscription, plan terms, and merchant wallet address from Supabase.
+2. Derives the merchant Keypair from `merchant_secret` and verifies it matches the plan owner.
+3. Builds the Soroban transaction invoking `pull_funds(user, merchant)` on the Orbit contract.
+4. Prepares (simulates), signs, and submits the transaction to Soroban RPC.
+5. Updates `next_billing_date` in Supabase to `pull_time + interval_seconds`.
 
 #### Request Body
+Content-Type: `application/json`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `subscription_id` | string (UUID) | Yes | Identifier of the subscription being charged. |
-| `merchant_secret` | string | Yes | Stellar secret key (`S...`) used to sign the transaction. Must match the merchant wallet associated with the plan. |
+| `subscription_id` | `string` (UUID) | Yes | Unique ID of the subscription to pull funds for. |
+| `merchant_secret` | `string` | Yes | Stellar secret key (`S...`) of the merchant owning the plan. |
 
 #### Example Request
 
@@ -268,63 +255,76 @@ Submits an on-chain transaction invoking `pull_funds` on the Soroban smart contr
 curl -X POST http://localhost:3001/trigger-pull \
   -H "Content-Type: application/json" \
   -d '{
-    "subscription_id": "4a7f2e18-6c51-41b9-9cf3-90d1bf379b32",
-    "merchant_secret": "SDEXAMPLESECRETKEYNOTREALFORTESTINGONLY1234567890ABCDEF"
+    "subscription_id": "c1f7b9e0-1234-5678-9abc-def012345678",
+    "merchant_secret": "SCZANGBA5YHTNYVVV4C3U252E2B6P6F5T3U6MM63WBSBZVYAYE6XYZTEST"
   }'
 ```
 
-#### Success Response (200 OK)
+#### Example Success Response
+Status: `200 OK`
 
 ```json
 {
   "message": "Successfully pulled funds on-chain!",
-  "txHash": "a1f5924b18dfa73bc9281a8b9813de64c3917d23d8c11438f71c4faee202111b"
+  "txHash": "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0"
 }
 ```
 
 #### Error Responses
 
-- **400 Bad Request:** Missing `subscription_id` or `merchant_secret`.
+- `400 Bad Request`
+  Returned when `subscription_id` or `merchant_secret` is missing.
   ```json
   {
     "error": "Missing subscription_id or merchant_secret"
   }
   ```
-- **401 Unauthorized:** Secret key's public address does not match the merchant record in the database.
+
+- `401 Unauthorized`
+  Returned when the provided `merchant_secret` does not match the merchant wallet registered for the plan.
   ```json
   {
     "error": "Merchant secret does not match the plan owner's address"
   }
   ```
-- **404 Not Found:** `subscription_id` does not match any record.
+
+- `404 Not Found`
+  Returned when the subscription record does not exist.
   ```json
   {
     "error": "Subscription not found"
   }
   ```
-- **500 Internal Server Error:** Contract ID missing from configuration, RPC failure, or contract execution revert (e.g. interval has not yet elapsed).
+
+- `500 Internal Server Error`
+  Returned when `ORBIT_CONTRACT_ID` is not set in `.env`, or the Soroban transaction build, simulation, or submission fails (e.g., interval not elapsed, insufficient allowance).
   ```json
   {
     "error": "ORBIT_CONTRACT_ID not set in .env"
   }
   ```
+  ```json
+  {
+    "error": "Transaction failed: {\"status\":\"FAILED\"}"
+  }
+  ```
 
 ---
 
-### POST /subscriptions
+### 5. POST /subscriptions
 
-Registers a customer subscription after on-chain allowance and vault creation.
+#### Purpose
+Records a customer subscription after the customer has executed the on-chain allowance approval and vault creation handshake with the Orbit contract.
 
-- **Method:** `POST`
-- **Path:** `/subscriptions`
-- **Purpose:** Records that a customer has signed the Soroban handshake for a plan. Sets `next_billing_date` to current timestamp so initial billing can be processed.
+Sets `next_billing_date` to the current timestamp (`new Date().toISOString()`), enabling the initial pull immediately.
 
 #### Request Body
+Content-Type: `application/json`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `plan_id` | string (UUID) | Yes | UUID of the plan being subscribed to. |
-| `customer_wallet_address` | string | Yes | Stellar public address (`G...`) of the subscriber. |
+| `plan_id` | `string` (UUID) | Yes | Unique ID of the plan being subscribed to. |
+| `customer_wallet_address` | `string` | Yes | Stellar public key (`G...`) of the subscriber. |
 
 #### Example Request
 
@@ -332,39 +332,43 @@ Registers a customer subscription after on-chain allowance and vault creation.
 curl -X POST http://localhost:3001/subscriptions \
   -H "Content-Type: application/json" \
   -d '{
-    "plan_id": "e0b8e99b-5136-4d1d-9351-91a5db4fb056",
-    "customer_wallet_address": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+    "plan_id": "e2a0b3df-2015-4672-9721-a1e94c1408d7",
+    "customer_wallet_address": "GD3AGJRMLRKRTQKBVMLT6AW34IZZ3IEALRHTY247BBNISVS452SMQDPG"
   }'
 ```
 
-#### Success Response (201 Created)
+#### Example Success Response
+Status: `201 Created`
 
 ```json
 {
   "message": "Subscription created",
   "subscription": {
-    "id": "4a7f2e18-6c51-41b9-9cf3-90d1bf379b32",
-    "plan_id": "e0b8e99b-5136-4d1d-9351-91a5db4fb056",
-    "customer_wallet_address": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    "id": "c1f7b9e0-1234-5678-9abc-def012345678",
+    "plan_id": "e2a0b3df-2015-4672-9721-a1e94c1408d7",
+    "customer_wallet_address": "GD3AGJRMLRKRTQKBVMLT6AW34IZZ3IEALRHTY247BBNISVS452SMQDPG",
     "status": "active",
-    "next_billing_date": "2026-09-30T02:00:00.000Z",
-    "created_at": "2026-09-30T02:00:00.000Z"
+    "next_billing_date": "2026-09-30T00:00:00.000Z",
+    "created_at": "2026-09-30T00:00:00.000Z"
   }
 }
 ```
 
 #### Error Responses
 
-- **400 Bad Request:** Missing `plan_id` or `customer_wallet_address`.
+- `400 Bad Request`
+  Returned when `plan_id` or `customer_wallet_address` is missing.
   ```json
   {
     "error": "Missing required fields"
   }
   ```
-- **500 Internal Server Error:** Database error or unique constraint violation (e.g. duplicate active subscription for identical plan and customer address).
+
+- `500 Internal Server Error`
+  Returned if the database query fails or the customer is already subscribed to the plan (unique constraint violation on `(plan_id, customer_wallet_address)`).
   ```json
   {
-    "error": "duplicate key value violates unique constraint"
+    "error": "duplicate key value violates unique constraint \"subscriptions_plan_id_customer_wallet_address_key\""
   }
   ```
 
@@ -377,3 +381,17 @@ The API queries three primary tables defined in `apps/backend/schema.sql`:
 - `merchants`: `id` (UUID PK), `wallet_address` (VARCHAR UNIQUE), `name` (VARCHAR), `created_at` (TIMESTAMP).
 - `plans`: `id` (UUID PK), `merchant_id` (UUID FK -> `merchants.id`), `name` (VARCHAR), `usdc_amount` (NUMERIC), `interval_seconds` (BIGINT), `created_at` (TIMESTAMP).
 - `subscriptions`: `id` (UUID PK), `plan_id` (UUID FK -> `plans.id`), `customer_wallet_address` (VARCHAR), `status` (VARCHAR DEFAULT 'active'), `next_billing_date` (TIMESTAMP), `created_at` (TIMESTAMP).
+
+---
+
+## Response and Error Conventions
+
+- All JSON responses return UTF-8 encoded text.
+- Successful mutations return `201 Created` with a `message` and entity payload (`plan`, `subscription`).
+- Successful queries return `200 OK` with an entity or collection payload (`plan`, `subscribers`).
+- Errors return an appropriate HTTP status code (`400`, `401`, `404`, `500`) with a JSON payload of shape:
+  ```json
+  {
+    "error": "Error description message"
+  }
+  ```
