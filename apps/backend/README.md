@@ -374,6 +374,16 @@ Status: `201 Created`
 
 ---
 
+## Database Schema Reference
+
+The API queries three primary tables defined in `apps/backend/schema.sql`:
+
+- `merchants`: `id` (UUID PK), `wallet_address` (VARCHAR UNIQUE), `name` (VARCHAR), `created_at` (TIMESTAMP).
+- `plans`: `id` (UUID PK), `merchant_id` (UUID FK -> `merchants.id`), `name` (VARCHAR), `usdc_amount` (NUMERIC), `interval_seconds` (BIGINT), `created_at` (TIMESTAMP).
+- `subscriptions`: `id` (UUID PK), `plan_id` (UUID FK -> `plans.id`), `customer_wallet_address` (VARCHAR), `status` (VARCHAR DEFAULT 'active'), `next_billing_date` (TIMESTAMP), `created_at` (TIMESTAMP).
+
+---
+
 ## Response and Error Conventions
 
 - All JSON responses return UTF-8 encoded text.
