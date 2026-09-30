@@ -10,6 +10,8 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
     const [isSubscribing, setIsSubscribing] = useState(false);
     const [success, setSuccess] = useState(false);
 
+    const [retryCount, setRetryCount] = useState(0);
+
     // Import Inter font dynamically if not present
     useEffect(() => {
         const link = document.createElement('link');
@@ -22,6 +24,7 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
         if (planData) {
             setPlan(planData);
             setLoading(false);
+            setError(null);
             return;
         }
 
@@ -31,29 +34,42 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
             return;
         }
 
+        let isMounted = true;
+        setLoading(true);
+        setError(null);
+
         const fetchPlan = async () => {
             try {
                 const response = await fetch(`${apiUrl}/plans/${planId}`);
                 if (!response.ok) throw new Error("Failed to fetch plan");
                 const data = await response.json();
-                setPlan(data.plan);
+                if (isMounted) {
+                    setPlan(data.plan);
+                    setError(null);
+                }
             } catch (err) {
-                console.warn("Could not load from API, loading default plan fallback:", err);
-                // Graceful fallback for offline demo / stand-alone preview
-                setPlan({
-                    id: planId,
-                    name: "Pro Developer Membership",
-                    usdc_amount: 490000000,
-                    interval_seconds: 2592000,
-                    merchants: { name: "Drips Labs" }
-                });
+                console.warn("Could not load plan from API:", err);
+                if (isMounted) {
+                    setPlan(null);
+                    setError("Unable to load plan. Please check your connection or try again.");
+                }
             } finally {
-                setLoading(false);
+                if (isMounted) {
+                    setLoading(false);
+                }
             }
         };
 
         fetchPlan();
-    }, [planId, planData, apiUrl]);
+
+        return () => {
+            isMounted = false;
+        };
+    }, [planId, planData, apiUrl, retryCount]);
+
+    const handleRetry = () => {
+        setRetryCount(count => count + 1);
+    };
 
     const handleConnect = async () => {
         try {
@@ -103,7 +119,19 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
     };
 
     if (loading) return <div style={styles.container}>Loading Orbit checkout...</div>;
-    if (error) return <div style={{ ...styles.container, color: '#ff4444' }}>{error}</div>;
+    if (error) {
+        return (
+            <div style={styles.container}>
+                <div style={styles.header}>
+                    <h2 style={{ ...styles.title, color: '#ff5555' }}>Unable to load plan</h2>
+                    <p style={styles.errorMessage}>{error}</p>
+                </div>
+                <button style={styles.primaryButton} onClick={handleRetry}>
+                    Try again
+                </button>
+            </div>
+        );
+    }
     if (!plan) return <div style={styles.container}>Plan not found.</div>;
 
     const displayAmount = (plan.usdc_amount / 10000000).toFixed(2);
@@ -204,6 +232,12 @@ const styles = {
         margin: 0,
         color: '#888888',
         fontSize: '14px'
+    },
+    errorMessage: {
+        margin: '8px 0 0 0',
+        color: '#AAAAAA',
+        fontSize: '14px',
+        lineHeight: '1.4'
     },
     priceContainer: {
         marginBottom: '8px'
