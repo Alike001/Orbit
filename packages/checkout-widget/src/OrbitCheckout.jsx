@@ -2,13 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { isConnected, requestAccess } from '@stellar/freighter-api';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) => {
+const DEMO_WALLET = "GBXQ4T7W91LK3PMZ0VR82C5E7NDF6U9H4YJ2A8S";
+const FREIGHTER_INSTALL_URL = "https://www.freighter.app/";
+
+const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001', demo = false }) => {
     const [plan, setPlan] = useState(planData || null);
     const [loading, setLoading] = useState(!planData);
     const [error, setError] = useState(null);
+    const [subscribeError, setSubscribeError] = useState(null);
     const [userAddress, setUserAddress] = useState(null);
     const [isSubscribing, setIsSubscribing] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [needsFreighter, setNeedsFreighter] = useState(false);
 
     const [retryCount, setRetryCount] = useState(0);
 
@@ -72,6 +77,7 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
     };
 
     const handleConnect = async () => {
+        setNeedsFreighter(false);
         try {
             const connected = await isConnected();
             if (connected) {
@@ -79,40 +85,53 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
                 const address = typeof result === 'string' ? result : result.address;
                 if (address) {
                     setUserAddress(address);
-                    setError(null);
+                    setSubscribeError(null);
                     return;
                 }
             }
         } catch (err) {
-            console.warn("Freighter connection error, using demo wallet:", err);
+            console.warn("Freighter connection error:", err);
         }
 
-        // Demo fallback for reviewers without extension installed
-        setUserAddress("GBXQ4T7W91LK3PMZ0VR82C5E7NDF6U9H4YJ2A8S");
-        setError(null);
+        if (demo) {
+            setUserAddress(DEMO_WALLET);
+            setSubscribeError(null);
+            return;
+        }
+
+        setNeedsFreighter(true);
     };
 
     const handleSubscribe = async () => {
         setIsSubscribing(true);
-        setError(null);
+        setSubscribeError(null);
         try {
-            await new Promise(resolve => setTimeout(resolve, 1400)); 
+            const response = await fetch(`${apiUrl}/subscriptions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    plan_id: planId,
+                    customer_wallet_address: userAddress
+                })
+            });
+
+            let payload = {};
             try {
-                await fetch(`${apiUrl}/subscriptions`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        plan_id: planId,
-                        customer_wallet_address: userAddress
-                    })
-                });
-            } catch (apiErr) {
-                // Ignore backend reachability in offline test mode
+                payload = await response.json();
+            } catch {
+                payload = {};
             }
+
+            if (response.status !== 201) {
+                const message = payload.error || payload.message || `Subscription failed (${response.status})`;
+                setSubscribeError(message);
+                return;
+            }
+
             setSuccess(true);
         } catch (err) {
             console.error("Subscription error:", err);
-            setError("Failed to complete subscription. Try again.");
+            setSubscribeError(err.message || "Failed to complete subscription. Try again.");
         } finally {
             setIsSubscribing(false);
         }
@@ -181,15 +200,28 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001' }) =
                         </div>
 
                         {!userAddress ? (
-                            <button style={styles.primaryButton} onClick={handleConnect}>
-                                Connect Freighter Wallet
-                            </button>
+                            <>
+                                <button style={styles.primaryButton} onClick={handleConnect}>
+                                    Connect Freighter Wallet
+                                </button>
+                                {needsFreighter && (
+                                    <p style={styles.errorMessage}>
+                                        Install Freighter to continue.{' '}
+                                        <a href={FREIGHTER_INSTALL_URL} target="_blank" rel="noreferrer" style={styles.link}>
+                                            Get Freighter
+                                        </a>
+                                    </p>
+                                )}
+                            </>
                         ) : (
                             <>
                                 <div style={styles.connectedText}>
                                     <span style={styles.connectedDot}></span>
                                     {userAddress.slice(0, 5)}...{userAddress.slice(-4)}
                                 </div>
+                                {subscribeError && (
+                                    <p style={styles.errorMessage}>{subscribeError}</p>
+                                )}
                                 <button 
                                     style={{ ...styles.primaryButton, opacity: isSubscribing ? 0.7 : 1 }} 
                                     onClick={handleSubscribe}
@@ -238,6 +270,10 @@ const styles = {
         color: '#AAAAAA',
         fontSize: '14px',
         lineHeight: '1.4'
+    },
+    link: {
+        color: '#FFFFFF',
+        textDecoration: 'underline'
     },
     priceContainer: {
         marginBottom: '8px'
