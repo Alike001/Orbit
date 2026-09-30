@@ -111,13 +111,25 @@ Once the SDK has established the allowance (Phase B above), the actual automated
 
 ---
 
-## 4. Risky Technical Pieces (To De-Risk First)
+### Contract Validation & Error Guardrails
 
-When building a Web3 project, you don't build the UI first. You build the scariest technical pieces first to prove they work. Here is what we must de-risk immediately:
+The underlying Soroban smart contract (`contracts/soroban/src/lib.rs`) strictly guards against invalid configurations and untimely pulls:
+* **`create_vault` checks:**
+  * Rejects non-positive amounts with panic: `"amount_per_interval must be positive"`.
+  * Rejects zero duration intervals with panic: `"interval_seconds must be greater than zero"`.
+* **`pull_funds` checks:**
+  * Rejects uninitialized vaults with panic: `"Vault does not exist"`.
+  * Rejects pull attempts before interval completion with panic: `"Too early to pull funds"`.
 
-1. **The Soroban Allowance Logic:** We need to make sure Soroban actually allows a third party (the backend) to execute a transfer on behalf of a user *after* the initial allowance is signed, without requiring a fresh signature. **(Action: Write a simple Rust script to test this before touching Next.js).**
-2. **Freighter Wallet UI in the SDK:** Connecting a wallet and triggering a contract call from inside an embedded React widget can get messy with browser extensions. **(Action: Build a blank React page that just connects Freighter and signs a dummy transaction).**
-3. **Decimal Math in Rust:** Processing USDC requires handling 7 decimal places accurately in Rust without rounding errors. **(Action: Use standard Stellar SDK data types for currency).**
+---
+
+## 4. Technical Architecture Verification
+
+When building Web3 infrastructure, the core blockchain primitives must be verified through automated tests:
+
+1. **The Soroban Allowance Logic:** Verified. Soroban allows the contract to execute `transfer_from` directly from the subscriber's account to the merchant's address within the approved allowance parameters, without requiring a fresh interactive signature for every billing cycle. **(Status: Implemented & Verified with 11 automated unit tests in `contracts/soroban/src/test.rs`).**
+2. **Freighter Wallet UI in the SDK:** Connecting a wallet and triggering allowance approvals has been integrated via `@stellar/freighter-api`.
+3. **Decimal Math in Rust:** USDC utilizes 7 decimal places (`i128` with precision multiplier `10_000_000`), avoiding floating-point imprecision.
 
 ---
 

@@ -5,7 +5,7 @@
 [![Stellar](https://img.shields.io/badge/Stellar-Soroban-7B68EE?style=flat-square&logo=stellar)](https://stellar.org)
 [![soroban-sdk](https://img.shields.io/badge/soroban--sdk-27.0.6-blue?style=flat-square&logo=rust)](contracts/soroban/Cargo.toml)
 [![Rust](https://img.shields.io/badge/Rust-no__std-orange?style=flat-square&logo=rust)](https://rustup.rs)
-[![Tests](https://img.shields.io/badge/tests-1%20passing-success?style=flat-square&logo=rust)](contracts/soroban/src/test.rs)
+[![Tests](https://img.shields.io/badge/tests-11%20passing-success?style=flat-square&logo=rust)](contracts/soroban/src/test.rs)
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=nextdotjs)](apps/frontend/package.json)
 [![Network](https://img.shields.io/badge/network-testnet-yellow?style=flat-square)](https://stellar.expert/explorer/testnet/contract/CAZBZBUWBSQYK2RZ6WHMXVDLIQHSU5WD7ANZYL6HLNSCRUOTNYCDYQNG)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](#15-license)
@@ -52,9 +52,21 @@ See [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) for the full system design.
 
 | Function | Auth | Description |
 |---|---|---|
-| `create_vault(user, merchant, token, amount_per_interval, interval_seconds)` | user | Writes `VaultData` for `(user, merchant)`. Sets `last_pull_timestamp = 0`. Moves no funds. |
-| `pull_funds(user, merchant)` | merchant | Checks the interval, calls `transfer_from(orbit, user, merchant, amount_per_interval)`, then saves `last_pull_timestamp = now`. |
+| `create_vault(user, merchant, token, amount_per_interval, interval_seconds)` | user | Validates inputs and writes `VaultData` for `(user, merchant)`. Rejects `amount_per_interval <= 0` and `interval_seconds == 0`. Sets `last_pull_timestamp = 0`. Moves no funds. |
+| `pull_funds(user, merchant)` | merchant | Verifies the vault exists and that the billing interval has elapsed. Calls `transfer_from(orbit, user, merchant, amount_per_interval)`, then saves `last_pull_timestamp = now`. |
 | `batch_disburse(sender, token, splits)` | sender | Calls `transfer_from(orbit, sender, split.recipient, split.amount)` for each split, all in one invocation. |
+
+### Validation and Errors
+
+The Soroban contract enforces input bounds and temporal checks through panics (`assert!` and `expect`). Callers, frontend SDKs, and backend services may encounter the following error messages:
+
+| Function | Panic Message | Condition / Cause |
+|---|---|---|
+| `create_vault` | `"amount_per_interval must be positive"` | Raised if `amount_per_interval <= 0`. Subscription amounts must be strictly greater than zero. |
+| `create_vault` | `"interval_seconds must be greater than zero"` | Raised if `interval_seconds == 0`. Recurring billing intervals must have a positive duration. |
+| `pull_funds` | `"Vault does not exist"` | Raised if no `VaultData` entry is found in persistent contract storage for the `(user, merchant)` key. |
+| `pull_funds` | `"Too early to pull funds"` | Raised if `last_pull_timestamp != 0` and the current ledger timestamp is less than `last_pull_timestamp + interval_seconds`. |
+| `pull_funds` / `batch_disburse` | SAC errors (e.g. `"insufficient allowance"`) | Emitted by the underlying Stellar Asset Contract if the subscriber or sender has insufficient balance or allowance. |
 
 ---
 
