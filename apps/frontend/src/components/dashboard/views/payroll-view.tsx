@@ -19,6 +19,8 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { PayrollRecipient } from "../dashboard-types";
+import Papa from "papaparse";
+import { StrKey } from "@stellar/stellar-sdk";
 
 const SAMPLE_RECIPIENTS: PayrollRecipient[] = [
   {
@@ -63,6 +65,7 @@ export function PayrollView() {
   const [recipients, setRecipients] = useState<PayrollRecipient[]>(SAMPLE_RECIPIENTS);
   const [isExecuting, setIsExecuting] = useState(false);
   const [disbursedSuccess, setDisbursedSuccess] = useState<string | null>(null);
+  const [csvErrors, setCsvErrors] = useState<string[]>([]);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -90,10 +93,10 @@ export function PayrollView() {
   const handleDownloadTemplate = () => {
     const csvContent =
       "data:text/csv;charset=utf-8," +
-      "Name,Role,StellarWallet,AmountUSDC\n" +
-      "Charlie Vance,Smart Contract Lead,GCHAR7V4D8L4C0F6A2H8J1K5W9Y3K7M2P6B3XQ4Z7M5,500\n" +
-      "Sarah Lin,Frontend Engineer,GSAR49A1H5J8K2GB3XQ4Z7M5W8Y2K6T1R9P0V4N8D2,400\n" +
-      "David Kim,UI/UX Designer,GDAV84N2L7C3F9A1H5J8K2GB3XQ4Z7M5W8Y2K6T1,200\n";
+      "Name,Role,StellarWallet,AmountUSDC\r\n" +
+      "Charlie Vance,Smart Contract Lead,GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,500\r\n" +
+      "Sarah Lin,Frontend Engineer,GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN,400\r\n" +
+      "David Kim,UI/UX Designer,GCKFBEIYV2U22IO2GUOWGQPTZX2I6DBA7EIEWIXKXZQJ2D3XN6XU4X7P,200\r\n";
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -107,43 +110,98 @@ export function PayrollView() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      if (!text) return;
+    setCsvErrors([]);
 
-      const lines = text.split("\n").filter((l) => l.trim().length > 0);
-      const parsed: PayrollRecipient[] = [];
-
-      // Skip header row if present
-      const startIdx = lines[0].toLowerCase().includes("name") ? 1 : 0;
-
-      for (let i = startIdx; i < lines.length; i++) {
-        const parts = lines[i].split(",").map((p) => p.trim());
-        if (parts.length >= 3) {
-          const name = parts[0] || `Recipient ${i}`;
-          const role = parts.length >= 4 ? parts[1] : "Contractor";
-          const wallet = parts.length >= 4 ? parts[2] : parts[1];
-          const amount = parseFloat(parts.length >= 4 ? parts[3] : parts[2]) || 50;
-
-          parsed.push({
-            id: `rec_csv_${i}_${Math.random().toString(36).substring(2, 6)}`,
-            name,
-            role,
-            walletAddress: wallet,
-            amount,
-            network: "stellar-testnet",
-            status: "ready",
-          });
+    Papa.parse<string[]>(file, {
+      skipEmptyLines: "greedy",
+      complete: (results) => {
+        const rows = results.data;
+        if (!rows || rows.length === 0) {
+          setCsvErrors(["The uploaded CSV file is empty."]);
+          return;
         }
-      }
 
-      if (parsed.length > 0) {
-        setRecipients(parsed);
-        setDisbursedSuccess(null);
-      }
-    };
-    reader.readAsText(file);
+        const errors: string[] = [];
+        const validRecipients: PayrollRecipient[] = [];
+
+        // Check if first row is a header row
+        const firstRowStr = rows[0].join(" ").toLowerCase();
+        const hasHeader =
+          firstRowStr.includes("name") ||
+          firstRowStr.includes("wallet") ||
+          firstRowStr.includes("role") ||
+          firstRowStr.includes("amount");
+
+        const startIdx = hasHeader ? 1 : 0;
+
+        for (let i = startIdx; i < rows.length; i++) {
+          const row = rows[i];
+          const rowNum = i + 1;
+
+          if (row.length < 2) {
+            errors.push(`Row ${rowNum}: Insufficient columns (expected at least wallet address and amount).`);
+            continue;
+          }
+
+          let name = `Recipient ${rowNum}`;
+          let role = "Contractor";
+          let wallet = "";
+          let rawAmount = "";
+
+          if (row.length >= 4) {
+            name = row[0]?.trim() || name;
+            role = row[1]?.trim() || role;
+            wallet = row[2]?.trim() || "";
+            rawAmount = row[3]?.trim() || "";
+          } else if (row.length === 3) {
+            name = row[0]?.trim() || name;
+            wallet = row[1]?.trim() || "";
+            rawAmount = row[2]?.trim() || "";
+          } else {
+            wallet = row[0]?.trim() || "";
+            rawAmount = row[1]?.trim() || "";
+          }
+
+          const rowIssues: string[] = [];
+
+          if (!wallet || !StrKey.isValidEd25519PublicKey(wallet)) {
+            rowIssues.push(`invalid Stellar address "${wallet || "empty"}"`);
+          }
+
+          const parsedAmount = parseFloat(rawAmount);
+          if (!rawAmount || isNaN(parsedAmount) || parsedAmount <= 0) {
+            rowIssues.push(`invalid or non-positive amount "${rawAmount || "empty"}"`);
+          }
+
+          if (rowIssues.length > 0) {
+            errors.push(`Row ${rowNum}: ${rowIssues.join(", ")}`);
+          } else {
+            validRecipients.push({
+              id: `rec_csv_${i}_${Math.random().toString(36).substring(2, 6)}`,
+              name,
+              role,
+              walletAddress: wallet,
+              amount: parsedAmount,
+              network: "stellar-testnet",
+              status: "ready",
+            });
+          }
+        }
+
+        if (errors.length > 0) {
+          setCsvErrors(errors);
+        }
+
+        if (validRecipients.length > 0) {
+          setRecipients(validRecipients);
+          setDisbursedSuccess(null);
+        }
+      },
+      error: (err) => {
+        setCsvErrors([`Failed to parse CSV file: ${err.message}`]);
+      },
+    });
+
     e.target.value = "";
   };
 
@@ -252,6 +310,31 @@ export function PayrollView() {
           </button>
         </div>
       </div>
+
+      {/* CSV Validation Error Banner */}
+      {csvErrors.length > 0 && (
+        <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-xs text-red-950 flex items-start gap-3 animate-in fade-in duration-200 shadow-xs">
+          <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+          <div className="flex-1 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-red-900">
+                CSV validation issues ({csvErrors.length} {csvErrors.length === 1 ? "row" : "rows"} skipped):
+              </span>
+              <button
+                onClick={() => setCsvErrors([])}
+                className="text-red-700 hover:text-red-900 font-medium underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+            <ul className="list-disc list-inside space-y-1 text-red-800 font-mono text-[11px] max-h-32 overflow-y-auto">
+              {csvErrors.map((err, idx) => (
+                <li key={idx}>{err}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* Success Notification Banner */}
       {disbursedSuccess && (
