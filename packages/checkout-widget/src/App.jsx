@@ -119,7 +119,7 @@ function App() {
           background: 'linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)',
           boxShadow: '0 20px 50px rgba(0,0,0,0.6)'
         }}>
-          <OrbitCheckout planData={activePlan} />
+          <OrbitCheckout planId={activePlan.id} planData={activePlan} demo />
         </div>
       )}
 

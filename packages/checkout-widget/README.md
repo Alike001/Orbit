@@ -12,7 +12,7 @@ npm install
 npm run dev
 ```
 
-The standalone SDK preview app (`src/App.jsx`) starts on `http://localhost:5173` and lets you switch between preset plans (`plan_pro`, `plan_community`, `plan_enterprise`) to test the checkout flow.
+The standalone SDK preview app (`src/App.jsx`) starts on `http://localhost:5173` and lets you switch between preset plans (`plan_pro`, `plan_community`, `plan_enterprise`) to test the checkout flow. The preview passes `demo` so the local tester can still use the demo wallet when Freighter is not installed.
 
 Other available scripts in `package.json`:
 
@@ -22,13 +22,14 @@ Other available scripts in `package.json`:
 
 ## Props
 
-`<OrbitCheckout />` (`src/OrbitCheckout.jsx`) accepts three props. Supply either `planId` (to load plan details from the Merchant API) or `planData` (to pass preloaded plan details directly).
+`<OrbitCheckout />` (`src/OrbitCheckout.jsx`) accepts four props. Supply either `planId` (to load plan details from the Merchant API) or `planData` (to pass preloaded plan details directly).
 
 | Prop | Type | Default | Description |
 |---|---|---|---|
 | `planId` | `string` | `undefined` | Identifier of the subscription plan. Used to fetch plan details from `GET {apiUrl}/plans/{planId}` when `planData` is not provided, and sent as `plan_id` in `POST {apiUrl}/subscriptions`. |
 | `planData` | `object` | `undefined` | Preloaded plan object. When provided, the widget skips the `GET /plans/:id` network call and renders immediately. |
 | `apiUrl` | `string` | `'http://localhost:3001'` | Base URL of the Orbit Merchant API used for `GET /plans/:id` and `POST /subscriptions`. |
+| `demo` | `boolean` | `false` | When `true`, a missing or unavailable Freighter wallet falls back to a hard-coded demo address so local previews can still be inspected. When `false` (the default for production embeds), the widget asks the user to [install Freighter](https://www.freighter.app/) instead of using a demo wallet. |
 
 ### `planData` Object Shape
 
@@ -71,13 +72,24 @@ Passing a preloaded plan object with `planData`:
 />
 ```
 
+Local SDK tester / offline preview with the demo wallet:
+
+```jsx
+<OrbitCheckout
+  planId="plan_pro"
+  planData={plan}
+  demo
+/>
+```
+
 ## Freighter Wallet Requirement
 
 The widget uses `@stellar/freighter-api` (`isConnected` and `requestAccess`) to connect to the subscriber's Stellar wallet in the browser:
 
 1. Install the [Freighter browser extension](https://www.freighter.app/) and configure it for Stellar Testnet (`Test SDF Network ; September 2015`).
 2. When the user clicks **Connect Freighter Wallet**, the widget checks `await isConnected()` and calls `await requestAccess()` to retrieve the subscriber's Stellar public key (`G...`).
-3. If the Freighter extension is not installed or connection fails during local preview, the widget falls back to a demo public key (`GBXQ4T7W91LK3PMZ0VR82C5E7NDF6U9H4YJ2A8S`) so the UI flow can still be inspected offline.
+3. If Freighter is missing or the connection fails and `demo` is `false`, the widget shows **Install Freighter to continue** with a link to https://www.freighter.app/. It does not fall back to a demo address.
+4. If `demo` is `true` (used by `src/App.jsx`), a missing Freighter connection falls back to the demo public key `GBXQ4T7W91LK3PMZ0VR82C5E7NDF6U9H4YJ2A8S` so the UI flow can still be inspected offline.
 
 ## React Embed Example
 
@@ -112,7 +124,7 @@ const plan = {
 };
 
 export default function DemoCheckout() {
-  return <OrbitCheckout planId={plan.id} planData={plan} />;
+  return <OrbitCheckout planId={plan.id} planData={plan} demo />;
 }
 ```
 
@@ -139,7 +151,7 @@ Called on mount when `planData` is not passed and `planId` is defined.
     }
   }
   ```
-- **Offline Fallback:** If the request fails (for example, when running the widget without the backend), the component logs a warning and falls back to a default demo plan so standalone previews continue to work.
+- **Load failure:** If the request fails and `planData` was not provided, the widget shows an error and a retry button. It does not invent a demo plan.
 
 ### 2. `POST /subscriptions`
 
@@ -154,4 +166,5 @@ Called when a connected user clicks **Subscribe & Approve**.
     "customer_wallet_address": "G..."
   }
   ```
-- **Offline Fallback:** Network errors when the backend is unreachable in standalone test mode are caught so the approval state transition can still be previewed.
+- **Success:** Only HTTP `201` shows the success state.
+- **Failure:** A non-201 response or a network error shows the API `error` message (or a fallback) and does **not** show success.
