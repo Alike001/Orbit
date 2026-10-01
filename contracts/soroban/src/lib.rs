@@ -74,6 +74,14 @@ impl OrbitContract {
         env.storage().persistent().set(&key, &vault_data);
     }
 
+    /// Read the current terms for a user/merchant vault.
+    /// This entrypoint requires no authorization and does not modify storage.
+    pub fn get_vault(env: Env, user: Address, merchant: Address) -> Option<VaultData> {
+        let key = VaultKey { user, merchant };
+
+        env.storage().persistent().get(&key)
+    }
+
     /// 2. THE PULL (Execute Billing)
     /// The merchant (or the Orbit backend) calls this to pull the funds.
     pub fn pull_funds(env: Env, user: Address, merchant: Address) {

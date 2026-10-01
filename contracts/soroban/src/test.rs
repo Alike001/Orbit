@@ -385,3 +385,77 @@ fn test_batch_disburse_reverts_fully_when_transfer_fails() {
     assert_eq!(token_client.balance(&recipient_2), 0);
     assert_eq!(token_client.balance(&sender), 100_0000000);
 }
+
+// ----------------------------------------------------------------------------
+// ISSUE #21: READ-ONLY VAULT LOOKUP
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_get_vault_returns_none_when_vault_does_not_exist() {
+    let env = Env::default();
+
+    let user = Address::generate(&env);
+    let merchant = Address::generate(&env);
+
+    let contract_id = env.register(OrbitContract, ());
+    let orbit_client = OrbitContractClient::new(&env, &contract_id);
+
+    let vault = orbit_client.get_vault(&user, &merchant);
+
+    assert_eq!(vault, None);
+}
+
+#[test]
+fn test_get_vault_returns_existing_vault_and_latest_pull_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let user = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token_address = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = TokenClient::new(&env, &token_address);
+    let token_admin_client = StellarAssetClient::new(&env, &token_address);
+
+    token_admin_client.mint(&user, &100_0000000);
+
+    let contract_id = env.register(OrbitContract, ());
+    let orbit_client = OrbitContractClient::new(&env, &contract_id);
+
+    let amount = 20_0000000;
+    let interval = 86400;
+
+    token_client.approve(&user, &orbit_client.address, &100_0000000, &2000000);
+
+    orbit_client.create_vault(&user, &merchant, &token_address, &amount, &interval);
+
+    let created_vault = orbit_client
+        .get_vault(&user, &merchant)
+        .expect("vault should exist");
+
+    assert_eq!(created_vault.token, token_address);
+    assert_eq!(created_vault.amount_per_interval, amount);
+    assert_eq!(created_vault.interval_seconds, interval);
+    assert_eq!(created_vault.last_pull_timestamp, 0);
+
+    env.ledger().set_timestamp(1000);
+    orbit_client.pull_funds(&user, &merchant);
+
+    let after_first_pull = orbit_client
+        .get_vault(&user, &merchant)
+        .expect("vault should still exist");
+
+    assert_eq!(after_first_pull.last_pull_timestamp, 1000);
+
+    env.ledger().set_timestamp(1000 + interval);
+    orbit_client.pull_funds(&user, &merchant);
+
+    let after_second_pull = orbit_client
+        .get_vault(&user, &merchant)
+        .expect("vault should still exist");
+
+    assert_eq!(after_second_pull.last_pull_timestamp, 1000 + interval);
+}

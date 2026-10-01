@@ -294,6 +294,13 @@ The contract is a single `no_std` crate:
 - `contracts/soroban/src/lib.rs`: `#[contract] pub struct OrbitContract;` and its `#[contractimpl]`
 - `contracts/soroban/src/test.rs`: unit tests
 
+| Function | Authorization | Storage behavior | Purpose |
+|---|---|---|---|
+| `create_vault` | Subscriber | Writes | Creates or replaces recurring payment terms for a user and merchant |
+| `get_vault` | None | Read-only | Returns the current `VaultData` for a user and merchant, or `None` if no vault exists |
+| `pull_funds` | Merchant | Reads and writes | Transfers one billing interval and updates `last_pull_timestamp` |
+| `batch_disburse` | Sender | No contract storage | Atomically distributes token amounts to multiple recipients |
+
 Each state-changing method follows the same pattern:
 
 1. `require_auth()` on the one address that owns the action,
