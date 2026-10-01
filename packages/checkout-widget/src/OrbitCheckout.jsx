@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { isConnected, requestAccess } from '@stellar/freighter-api';
+import { getAddress, isConnected, requestAccess } from '@stellar/freighter-api';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const DEMO_WALLET = "GBXQ4T7W91LK3PMZ0VR82C5E7NDF6U9H4YJ2A8S";
@@ -14,6 +14,7 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001', dem
     const [isSubscribing, setIsSubscribing] = useState(false);
     const [success, setSuccess] = useState(false);
     const [needsFreighter, setNeedsFreighter] = useState(false);
+    const [walletError, setWalletError] = useState(null);
 
     const [retryCount, setRetryCount] = useState(0);
 
@@ -77,30 +78,71 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001', dem
     };
 
     const handleConnect = async () => {
-        setNeedsFreighter(false);
-        try {
-            const connected = await isConnected();
-            if (connected) {
-                const result = await requestAccess();
-                const address = typeof result === 'string' ? result : result.address;
-                if (address) {
-                    setUserAddress(address);
-                    setSubscribeError(null);
-                    return;
-                }
-            }
-        } catch (err) {
-            console.warn("Freighter connection error:", err);
-        }
+    setNeedsFreighter(false);
+    setWalletError(null);
+    setUserAddress(null);
 
-        if (demo) {
-            setUserAddress(DEMO_WALLET);
-            setSubscribeError(null);
+    const useDemoWallet = () => {
+        if (!demo) return false;
+
+        setUserAddress(DEMO_WALLET);
+        setWalletError(null);
+        setNeedsFreighter(false);
+        return true;
+    };
+
+    try {
+        const connection = await isConnected();
+
+        if (connection.error || !connection.isConnected) {
+            if (useDemoWallet()) return;
+
+            setNeedsFreighter(true);
+            setWalletError(
+                connection.error?.message ||
+                "Freighter not detected. Install the extension, then reload this page."
+            );
             return;
         }
 
-        setNeedsFreighter(true);
-    };
+        const access = await requestAccess();
+
+        if (access.address) {
+            setUserAddress(access.address);
+            return;
+        }
+
+        if (access.error) {
+            if (useDemoWallet()) return;
+
+            setWalletError(
+                access.error.message || "Freighter rejected the request."
+            );
+            return;
+        }
+
+        const current = await getAddress();
+
+        if (current.address) {
+            setUserAddress(current.address);
+            return;
+        }
+
+        if (useDemoWallet()) return;
+
+        setWalletError(
+            current.error?.message || "Freighter did not return an address."
+        );
+    } catch (err) {
+        console.warn("Freighter connection error:", err);
+
+        if (useDemoWallet()) return;
+
+        setWalletError(
+            "Could not reach Freighter. Is the extension unlocked?"
+        );
+    }
+};
 
     const handleSubscribe = async () => {
         setIsSubscribing(true);
@@ -205,13 +247,18 @@ const OrbitCheckout = ({ planId, planData, apiUrl = 'http://localhost:3001', dem
                                     Connect Freighter Wallet
                                 </button>
                                 {needsFreighter && (
-                                    <p style={styles.errorMessage}>
+                                    <p role="alert" style={styles.errorMessage}>
                                         Install Freighter to continue.{' '}
                                         <a href={FREIGHTER_INSTALL_URL} target="_blank" rel="noreferrer" style={styles.link}>
                                             Get Freighter
                                         </a>
                                     </p>
                                 )}
+                               {walletError && !needsFreighter && (
+                                  <p role="alert" style={styles.errorMessage}>
+                                      {walletError}
+                                  </p>
+                             )}
                             </>
                         ) : (
                             <>
