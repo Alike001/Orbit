@@ -24,8 +24,31 @@ const crypto = require('crypto');
  *   RateLimit-Reset     seconds until the oldest counted request leaves the window
  *                       (i.e. until Remaining next increases)
  *   RateLimit-Policy    "<limit>;w=<window seconds>"
- * plus Retry-After on a 429.
+ * and the widely used X- variants (#231):
+ *   X-RateLimit-Limit     requests allowed per window
+ *   X-RateLimit-Remaining requests left in the current window
+ *   X-RateLimit-Reset     Unix time (seconds) at which Remaining next increases
+ * A rejected request gets 429, Retry-After (seconds) and a structured JSON body:
+ *   { error, code: "rate_limit_exceeded", limit, remaining, retry_after, reset_at, tier? }
  */
+
+// Requests per window for each API key tier (#231). Unknown or missing tiers get `free`.
+const DEFAULT_API_KEY_TIER_LIMITS = Object.freeze({ free: 60, pro: 600 });
+
+const apiKeyTierLimitsFromEnv = (env = process.env) => ({
+    // API_KEY_RATE_LIMIT_MAX predates tiers and still sets the free quota
+    free: Number(env.API_KEY_FREE_TIER_LIMIT) || Number(env.API_KEY_RATE_LIMIT_MAX) || DEFAULT_API_KEY_TIER_LIMITS.free,
+    pro: Number(env.API_KEY_PRO_TIER_LIMIT) || DEFAULT_API_KEY_TIER_LIMITS.pro,
+});
+
+const resolveApiKeyTier = (req, tierLimits = DEFAULT_API_KEY_TIER_LIMITS) => {
+    const tier = req.apiKey?.tier;
+    return Object.prototype.hasOwnProperty.call(tierLimits, tier) ? tier : 'free';
+};
+
+// Limit function for an API key limiter: the quota of the key's tier
+const apiKeyTierLimit = (tierLimits = DEFAULT_API_KEY_TIER_LIMITS) => (req) =>
+    tierLimits[resolveApiKeyTier(req, tierLimits)];
 
 // ---------------------------------------------------------------------------
 // Memory store
@@ -298,6 +321,8 @@ const createRateLimiter = ({
     name = 'default',
     // Called (and awaited, errors ignored) when a request is rejected
     onLimitReached,
+    // Extra fields for the 429 body, e.g. the API key tier
+    describe,
 }) => {
     const resolveLimit = typeof limit === 'function' ? limit : () => limit;
 
@@ -311,19 +336,33 @@ const createRateLimiter = ({
             const { allowed, count, oldest } = await store.hit(`${name}:${key}`, { at, windowMs, limit: effectiveLimit });
 
             const resetSeconds = oldest !== null ? Math.max(0, Math.ceil((oldest + windowMs - at) / 1000)) : 0;
+            const remaining = Math.max(0, effectiveLimit - count);
+            const resetAt = Math.ceil(at / 1000) + resetSeconds;
             res.set({
                 'RateLimit-Limit': String(effectiveLimit),
-                'RateLimit-Remaining': String(Math.max(0, effectiveLimit - count)),
+                'RateLimit-Remaining': String(remaining),
                 'RateLimit-Reset': String(resetSeconds),
                 'RateLimit-Policy': `${effectiveLimit};w=${Math.ceil(windowMs / 1000)}`,
+                'X-RateLimit-Limit': String(effectiveLimit),
+                'X-RateLimit-Remaining': String(remaining),
+                'X-RateLimit-Reset': String(resetAt),
             });
 
             if (!allowed) {
                 if (onLimitReached) {
                     try { await onLimitReached(req, key); } catch (err) { console.error("Rate limit hook failed:", err); }
                 }
-                res.set('Retry-After', String(Math.max(1, resetSeconds)));
-                return res.status(429).json({ error: message });
+                const retryAfter = Math.max(1, resetSeconds);
+                res.set('Retry-After', String(retryAfter));
+                return res.status(429).json({
+                    error: message,
+                    code: 'rate_limit_exceeded',
+                    limit: effectiveLimit,
+                    remaining: 0,
+                    retry_after: retryAfter,
+                    reset_at: new Date(resetAt * 1000).toISOString(),
+                    ...(describe ? describe(req) : {}),
+                });
             }
         } catch (err) {
             // Only reachable if the store itself (memory or fallback) throws; do not take the API down
@@ -343,6 +382,10 @@ const createRateLimiter = ({
 };
 
 module.exports = {
+    DEFAULT_API_KEY_TIER_LIMITS,
+    apiKeyTierLimitsFromEnv,
+    resolveApiKeyTier,
+    apiKeyTierLimit,
     createRateLimiter,
     createStoreFromEnv,
     MemoryStore,

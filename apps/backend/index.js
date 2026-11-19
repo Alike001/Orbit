@@ -6,7 +6,13 @@ const { z } = require('zod');
 const { StrKey, Keypair, rpc, Networks, TransactionBuilder, Contract, Address } = require('@stellar/stellar-sdk');
 const { executeIdempotently, withBillingLock, sendResult } = require('./idempotency');
 const { API_KEY_ENVIRONMENTS, issueApiKey, requireApiKey } = require('./apiKeys');
-const { createRateLimiter, createStoreFromEnv } = require('./rateLimit');
+const {
+    createRateLimiter,
+    createStoreFromEnv,
+    apiKeyTierLimit,
+    apiKeyTierLimitsFromEnv,
+    resolveApiKeyTier,
+} = require('./rateLimit');
 const { createReputationScorer, createHorizonWalletLookup } = require('./reputation');
 const { isRelayerError, createRelayerFromEnv } = require('./relayer');
 const { createFeeEstimator } = require('./fee-estimator');
@@ -19,6 +25,7 @@ const {
     dispatchWebhookEvent,
     resendWebhookDelivery,
     replayWebhookEvents,
+    replayDeadLetter,
     setDeliveryObserver,
 } = require('./webhooks');
 const { createDeliveryAlertObserver, registerWebhookAlertRoutes } = require('./webhook-alerts');
@@ -74,12 +81,13 @@ const { registerNotificationTemplateRoutes } = require('./notification-templates
 const { registerProofRoutes } = require('./proofs');
 const { registerOrganizationRoutes } = require('./organizations');
 const { registerRpcProxyRoute } = require('./rpc-proxy');
-const { registerHealthMetrics } = require('./health-metrics');
+const { registerHealthMetrics, recordPullOutcome, setDbPoolSource } = require('./health-metrics');
 const { captureStripeRawBody, registerStripeBillingRoutes } = require('./stripe-billing');
 const { registerCredentialRoutes } = require('./credentials');
 const { registerPaymentLinkRoutes } = require('./payment-links');
 const { checkSchemaOnStartup } = require('./migrate');
 const { createInvoiceService, registerInvoiceRoutes } = require('./invoices');
+const { registerDevFundingRoutes } = require('./dev-faucet');
 
 const app = express();
 const feeEstimator = createFeeEstimator({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org' });
@@ -116,14 +124,19 @@ const ipRateLimit = createRateLimiter({
     keyGenerator: (req) => req.ip,
     onLimitReached: (req) => reputation.recordViolation(req.ip),
 });
-// Per-API-key limit on authenticated merchant routes, scaled by key tier and wallet age
+// Per-API-key limit on authenticated merchant routes (#231). The key's tier quota
+// (free: 60, pro: 600 requests per window by default) is the base allowance, which
+// reputation scoring then scales by key environment and wallet age as before.
+const apiKeyTierLimits = apiKeyTierLimitsFromEnv();
+const apiKeyTierQuota = apiKeyTierLimit(apiKeyTierLimits);
 const apiKeyRateLimit = createRateLimiter({
     name: 'key',
     store: rateLimitStore,
     windowMs: RATE_LIMIT_WINDOW_MS,
-    limit: reputation.apiKeyLimit(Number(process.env.API_KEY_RATE_LIMIT_MAX) || 100),
+    limit: (req) => reputation.apiKeyLimit(apiKeyTierQuota(req))(req),
     keyGenerator: (req) => req.apiKey?.id,
     message: "API key rate limit exceeded, please retry later",
+    describe: (req) => ({ tier: resolveApiKeyTier(req, apiKeyTierLimits) }),
 });
 app.locals.rateLimiters = { ip: ipRateLimit, apiKey: apiKeyRateLimit };
 app.locals.reputation = reputation;
@@ -142,6 +155,12 @@ const getSupabase = () => getPrimarySupabase(app);
 const authenticateMerchant = [requireApiKey(getSupabase), reputation.markAuthenticated, apiKeyRateLimit];
 registerAnalyticsRoutes(app, getSupabase);
 registerPaymentLinkRoutes(app, getSupabase, authenticateMerchant);
+// Testnet Friendbot + USDC trustline bootstrap for local development (#232);
+// not registered at all when NODE_ENV=production
+registerDevFundingRoutes(app, {
+    getFetch: () => app.locals.fetchImpl,
+    getHorizonServer: () => app.locals.devHorizonServer,
+});
 
 // Allows tests to inject a mock Soroban RPC server instead of hitting testnet
 const getSorobanServer = (rpcUrl) => app.locals.sorobanServer || new rpc.Server(rpcUrl);
@@ -531,7 +550,10 @@ const applyPullOutcome = async ({
     server = null,
     signedTx = null,
     extraBody = {},
+    // Seconds spent waiting for Soroban confirmation, for orbit_pull_duration_seconds (#230)
+    confirmationSeconds = null,
 }) => {
+    recordPullOutcome(status, confirmationSeconds);
     if (status === "SUCCESS") {
         const pullTime = new Date();
         const nextBilling = new Date(pullTime.getTime() + Number(sub.plans.interval_seconds) * 1000);
@@ -898,6 +920,7 @@ app.post('/submit-pull', authenticateMerchant, async (req, res) => {
                 const txHash = submitResponse.hash;
 
                 // 5. Confirm the transaction actually landed before touching billing state
+                const confirmStarted = process.hrtime.bigint();
                 const confirmation = await waitForTransaction(server, txHash, {
                     timeoutMs: pollTimeoutMs,
                     intervalMs: app.locals.txPollIntervalMs ?? TX_POLL_INTERVAL_MS,
@@ -914,6 +937,7 @@ app.post('/submit-pull', authenticateMerchant, async (req, res) => {
                     confirmation,
                     server,
                     signedTx,
+                    confirmationSeconds: Number(process.hrtime.bigint() - confirmStarted) / 1e9,
                 });
             });
         });
@@ -1016,15 +1040,24 @@ app.post('/relay/submit-pull', authenticateMerchant, relayRateLimit, async (req,
                 ttlSeconds: relayLockTtlSeconds(pollTimeoutMs),
             }, async () => {
                 let outcome;
+                // A relayed pull may be fee-bumped and confirmed more than once; time all of it
+                let confirmationNs = 0n;
                 try {
                     outcome = await relayer.relayPull({
                         merchantId: merchant.id,
                         entry,
                         ...pullParties,
-                        confirm: (server, hash) => waitForTransaction(server, hash, {
-                            timeoutMs: pollTimeoutMs,
-                            intervalMs: app.locals.txPollIntervalMs ?? TX_POLL_INTERVAL_MS,
-                        }),
+                        confirm: async (server, hash) => {
+                            const started = process.hrtime.bigint();
+                            try {
+                                return await waitForTransaction(server, hash, {
+                                    timeoutMs: pollTimeoutMs,
+                                    intervalMs: app.locals.txPollIntervalMs ?? TX_POLL_INTERVAL_MS,
+                                });
+                            } finally {
+                                confirmationNs += process.hrtime.bigint() - started;
+                            }
+                        },
                     });
                 } catch (err) {
                     if (isRelayerError(err)) return relayerErrorResult(err);
@@ -1035,6 +1068,7 @@ app.post('/relay/submit-pull', authenticateMerchant, relayRateLimit, async (req,
                     supabase, req, sub, merchant, subscription_id,
                     txHash: outcome.txHash,
                     status: outcome.status,
+                    confirmationSeconds: Number(confirmationNs) / 1e9,
                     extraBody: {
                         sponsored: true,
                         sponsor_address: relayer.sponsorAddress,
@@ -1890,6 +1924,62 @@ app.post('/webhooks/deliveries/:id/resend', async (req, res) => {
     }
 });
 
+// Webhook dead-letter queue (#229): deliveries that failed every automatic retry
+app.get('/webhooks/dead-letters', async (req, res) => {
+    try {
+        const { merchant_id, webhook_id, limit = 50, offset = 0 } = req.query;
+        if (!merchant_id) return res.status(400).json({ error: "merchant_id is required" });
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
+
+        let query = supabase
+            .from('webhook_dead_letters')
+            .select('*', { count: 'exact' })
+            .eq('merchant_id', merchant_id);
+        if (webhook_id) query = query.eq('webhook_id', webhook_id);
+
+        const { data, count, error } = await query
+            .order('failed_at', { ascending: false })
+            .range(Number(offset), Number(offset) + Number(limit) - 1);
+        if (error) throw error;
+
+        res.status(200).json({
+            dead_letters: data || [],
+            total: count ?? (data?.length || 0),
+            limit: Number(limit),
+            offset: Number(offset),
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/webhooks/dead-letters/:id/replay', async (req, res) => {
+    try {
+        const merchantId = req.body?.merchant_id;
+        if (!merchantId) return res.status(400).json({ error: "merchant_id is required" });
+        const supabase = getSupabase();
+        if (!supabase) return res.status(500).json({ error: "Supabase client not initialized" });
+
+        const deadLetter = await replayDeadLetter(supabase, req.params.id, {
+            merchantId,
+            fetchImpl: app.locals.fetchImpl,
+        });
+        if (!deadLetter) return res.status(404).json({ error: "Dead letter not found" });
+
+        res.status(200).json({
+            message: deadLetter.replay_status === 'success'
+                ? "Dead letter replayed successfully"
+                : "Dead letter replay failed; the endpoint is still rejecting deliveries",
+            dead_letter: deadLetter,
+        });
+    } catch (err) {
+        if (err.status) return res.status(err.status).json({ error: err.message });
+        console.error("Error replaying webhook dead letter:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/webhooks/test', async (req, res) => {
     try {
         const { merchant_id, webhook_id, event_type = "payment.settled" } = req.body || {};
@@ -2001,6 +2091,13 @@ registerPayoutSplitRoutes(app, getSupabase, authenticateMerchant, {
 registerPriceIndexationRoutes(app, getSupabase, authenticateMerchant);
 registerSnapshotRoutes(app, getSupabase, authenticateMerchant, getSorobanServer);
 registerHealthMetrics(app, { getSupabase, getSorobanServer, rpcUrl: process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org' });
+// orbit_db_pool_active (#230): connections checked out of the backend's pg pools
+setDbPoolSource(() => [
+    dbManager.primaryPool,
+    ...dbManager.replicaPools,
+    app.locals.reportPool,
+    app.locals.reportReplicaPool,
+]);
 registerIndexerRoutes(app);
 registerStripeBillingRoutes(app, getSupabase, authenticateMerchant);
 const credentialService = registerCredentialRoutes(app, getSupabase, authenticateMerchant);

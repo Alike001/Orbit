@@ -31,7 +31,9 @@ Copy `apps/backend/.env.example` to `apps/backend/.env` and configure:
 | `RECONCILE_EVENT_LOOKBACK_LEDGERS` | Ledgers scanned back when no event cursor is stored or it has left RPC retention (defaults to 17280, ~1 day) | `17280` |
 | `RECONCILE_GRACE_SECONDS` | Subscriptions younger than this are not checked against `get_vault` (defaults to 300) | `300` |
 | `RATE_LIMIT_WINDOW_MS` | Sliding window length for both rate limits (defaults to 60000) | `60000` |
-| `API_KEY_RATE_LIMIT_MAX` | Requests per window allowed for each API key on authenticated routes (defaults to 100) | `100` |
+| `API_KEY_FREE_TIER_LIMIT` | Requests per window for `free` tier API keys (defaults to `API_KEY_RATE_LIMIT_MAX`, else 60) | `60` |
+| `API_KEY_PRO_TIER_LIMIT` | Requests per window for `pro` tier API keys (defaults to 600) | `600` |
+| `API_KEY_RATE_LIMIT_MAX` | Legacy name for the free tier quota, used when `API_KEY_FREE_TIER_LIMIT` is unset | `60` |
 | `IP_RATE_LIMIT_MAX` | Requests per window allowed for each client IP on every route (defaults to 300) | `300` |
 | `TRUST_PROXY` | Express `trust proxy` setting; set when behind a load balancer so rate limiting sees the client IP | `1` |
 | `REDIS_URL` | Redis shared by all API instances for rate limits and reputation; unset keeps them in memory per process | `redis://localhost:6379` |
@@ -55,6 +57,12 @@ Copy `apps/backend/.env.example` to `apps/backend/.env` and configure:
 | `SPLIT_RELAYER_SECRET_KEY` | Account that signs on-chain payout-split transfers; falls back to `RELAYER_SECRET_KEY`. Splits stay pending when unset | `S...` |
 | `SPLIT_TOKEN_CONTRACT_ID` | Stellar Asset Contract used for split payouts; falls back to `USDC_CONTRACT_ID` | `C...` |
 | `PRICE_INDEXATION_INTERVAL_MS` | Delay between price indexation worker runs (defaults to 900000 = 15 min) | `900000` |
+| `METRICS_TOKEN` | Bearer token required by `GET /metrics`; when unset the endpoint answers 403 | `a-long-random-token` |
+| `WEBHOOK_MAX_ATTEMPTS` | Delivery attempts before a webhook goes to the dead-letter queue (defaults to 5) | `5` |
+| `WEBHOOK_RETRY_BASE_MS` / `WEBHOOK_RETRY_MAX_MS` | Base and maximum retry backoff; delays double per attempt with jitter (defaults to 30000 / 1800000) | `30000` |
+| `DEV_FRIENDBOT_URL` | Friendbot used by `POST /api/dev/fund` (defaults to the public testnet Friendbot) | `https://friendbot.stellar.org` |
+| `DEV_FUND_HORIZON_URL` | Horizon used for the dev USDC trustline (defaults to `HORIZON_URL`, else testnet Horizon) | `https://horizon-testnet.stellar.org` |
+| `DEV_USDC_ISSUER` | USDC issuer the dev trustline points at (defaults to Circle's testnet issuer) | `GBBD47...LFLA5` |
 
 ### Running the API
 
@@ -101,6 +109,10 @@ The service runs at `http://localhost:3001`.
 | `DELETE` | `/price-schedules/:id` | API key | Cancel a scheduled price change |
 | `POST` | `/price-schedules/process` | API key | Run the notice/apply pipeline once |
 | `POST` | `/price-reauthorizations/:token/authorize` | Public | Subscriber accepts updated allowance terms |
+| `GET` | `/webhooks/dead-letters` | Merchant | Webhook deliveries that failed every retry (`merchant_id` query) |
+| `POST` | `/webhooks/dead-letters/:id/replay` | Merchant | Re-send a dead-lettered delivery once (`merchant_id` body) |
+| `GET` | `/metrics` | `METRICS_TOKEN` | Prometheus metrics |
+| `POST` | `/api/dev/fund` | Dev only | Fund a testnet account via Friendbot and add the USDC trustline; not registered when `NODE_ENV=production` |
 
 ---
 
@@ -150,7 +162,7 @@ curl -X DELETE http://localhost:3001/api-keys/<key id> -H "Authorization: Bearer
 Sliding-window-log limits apply (default window 60 seconds):
 
 - **Per client IP** on every route, including public ones and failed authentication attempts (base `IP_RATE_LIMIT_MAX`, default 300).
-- **Per API key** on authenticated routes (base `API_KEY_RATE_LIMIT_MAX`, default 100).
+- **Per API key** on authenticated routes. The base is the key's tier quota (`api_keys.rate_limit_tier`): `free` 60 and `pro` 600 requests per minute by default (`API_KEY_FREE_TIER_LIMIT`, `API_KEY_PRO_TIER_LIMIT`). Keys without a tier are `free`.
 - **Per merchant** on `/relay/*` (see below).
 
 With `REDIS_URL` set, every limit lives in Redis (one sorted set per client, checked and updated by a single Lua script), so all API instances behind a load balancer enforce one shared limit. If Redis becomes unreachable each instance falls back to in-memory limits, retrying Redis every `RATE_LIMIT_REDIS_RETRY_MS`. Without `REDIS_URL` limits are per process.
@@ -168,7 +180,19 @@ Each base limit is scaled by the client's reputation, stored alongside the limit
 
 Wallet age is the timestamp of the account's first operation on Horizon, cached for 7 days; it is only scored when `HORIZON_URL` is set, and an unknown age is neutral.
 
-Responses carry `RateLimit-Limit` (the client's effective limit), `RateLimit-Remaining`, `RateLimit-Reset` (seconds until the oldest counted request leaves the window) and `RateLimit-Policy`. Over the limit the API returns `429 Too Many Requests` with `Retry-After`.
+Responses carry `RateLimit-Limit` (the client's effective limit), `RateLimit-Remaining`, `RateLimit-Reset` (seconds until the oldest counted request leaves the window) and `RateLimit-Policy`, plus `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (Unix time in seconds when `Remaining` next increases). Over the limit the API returns `429 Too Many Requests` with `Retry-After` and a JSON body:
+
+```json
+{
+  "error": "API key rate limit exceeded, please retry later",
+  "code": "rate_limit_exceeded",
+  "limit": 60,
+  "remaining": 0,
+  "retry_after": 12,
+  "reset_at": "2026-11-19T10:00:12.000Z",
+  "tier": "free"
+}
+```
 
 `npm test` uses in-memory limits. To also run the Lua scripts against a real Redis, start one and run `REDIS_TEST_URL=redis://127.0.0.1:6379 npm test`.
 
@@ -955,3 +979,43 @@ immediately.
 and `verifyCredentialOnline(token, { baseUrl })` also checks revocation.
 
 Migration: `migrations/20261018000100_subscription_credentials.sql`.
+
+---
+
+## Webhook Delivery
+
+Every delivery is signed with the endpoint's signing secret:
+
+```
+X-Orbit-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, "<t>.<raw body>")>
+```
+
+Verify it against the **raw** request body, and reject timestamps more than 5 minutes from your clock to block replays. During a secret rotation, accept either the current or the previous secret. `X-Orbit-Delivery` identifies the delivery and `X-Orbit-Attempt` the attempt number.
+
+A delivery fails on a non-2xx response, a network error or a 6-second timeout. Failed deliveries are retried in the background, so dispatching never waits on a slow endpoint. There are up to `WEBHOOK_MAX_ATTEMPTS` attempts (default 5) with jittered exponential backoff: the delay doubles from `WEBHOOK_RETRY_BASE_MS`, capped at `WEBHOOK_RETRY_MAX_MS`, and is randomized between 50% and 100% of that value. The delivery's `status` is `retrying` with `next_retry_at` until it succeeds or attempts run out. It then becomes `dead_lettered` and is archived in `webhook_dead_letters`. Merchants can list those with `GET /webhooks/dead-letters` and re-send one with `POST /webhooks/dead-letters/:id/replay`.
+
+## Metrics
+
+`GET /metrics` serves Prometheus text format and requires `Authorization: Bearer $METRICS_TOKEN` (or `X-Metrics-Token`). Missing tokens get 401, wrong tokens 403, and with no `METRICS_TOKEN` configured the endpoint always answers 403. Besides Node.js process metrics and HTTP/RPC latency it exposes:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `orbit_pull_duration_seconds` | histogram | `status` | Time spent waiting for Soroban confirmation of a pull (all polls, including fee-bump re-submissions) |
+| `orbit_pull_total` | counter | `status` = `success`, `failed`, `timeout` | Pull outcomes; `timeout` means still unconfirmed when polling stopped |
+| `orbit_webhook_delivery_total` | counter | `outcome` = `success`, `failed`, `dead_lettered` | Delivery attempts, and transfers to the dead-letter queue |
+| `orbit_db_pool_active` | gauge | | Connections checked out of the backend's Postgres pools |
+
+## Testnet Dev Funding
+
+Outside production, `POST /api/dev/fund` bootstraps a testnet account in one call. Friendbot funding is retried on transient errors, and an already-funded account is not an error. Before adding the USDC trustline, the helper checks that the asset exists and skips the trustline if the account already has it:
+
+```bash
+# Fund an account you control and add the USDC trustline
+curl -X POST localhost:3001/api/dev/fund -H 'Content-Type: application/json' -d '{"secret_key":"S..."}'
+# Fund only (a trustline must be signed by the account's secret)
+curl -X POST localhost:3001/api/dev/fund -H 'Content-Type: application/json' -d '{"public_key":"G..."}'
+# Generate, fund and return a new keypair
+curl -X POST localhost:3001/api/dev/fund -H 'Content-Type: application/json' -d '{}'
+```
+
+The route is not registered when `NODE_ENV=production`, it re-checks `NODE_ENV` on every request, and it refuses to run when `STELLAR_NETWORK_PASSPHRASE` is not the testnet passphrase. The helpers `fundTestnetAccount(publicKey)` and `ensureUsdcTrustline(keypair)` are exported from `dev-faucet.js` for scripts and tests.
