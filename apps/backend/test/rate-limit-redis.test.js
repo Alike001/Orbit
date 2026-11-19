@@ -323,8 +323,8 @@ describe('Rate limit headers on API routes', () => {
     app.locals.walletLookup = vi.fn().mockResolvedValue(Date.now() - 365 * DAY_MS);
 
     const authed = await request(app).get('/subscribers').set('Authorization', apiKey.header);
-    // Live key (3x) on a mature wallet (1.5x) of the default 100
-    expect(authed.headers['ratelimit-limit']).toBe('450');
+    // Live key (3x) on a mature wallet (1.5x) of the free tier quota of 60
+    expect(authed.headers['ratelimit-limit']).toBe('270');
     expect(app.locals.walletLookup).toHaveBeenCalledWith(wallet);
 
     // The IP is now known to belong to a merchant, so public routes allow 4x the default 300

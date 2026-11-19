@@ -8,7 +8,7 @@ const PREFIX_SECRET_CHARS = 4;
 // last_used_at is only written when it is older than this, so every request is not a DB write
 const LAST_USED_WRITE_INTERVAL_MS = Number(process.env.API_KEY_LAST_USED_WRITE_INTERVAL_MS) || 60 * 1000;
 
-const API_KEY_SELECT = 'id, merchant_id, name, key_prefix, environment, organization_member_wallet, last_used_at, revoked_at, merchants(id, name, wallet_address)';
+const API_KEY_SELECT = 'id, merchant_id, name, key_prefix, environment, rate_limit_tier, organization_member_wallet, last_used_at, revoked_at, merchants(id, name, wallet_address)';
 
 const hashApiKey = (secret) => crypto.createHash('sha256').update(secret).digest('hex');
 
@@ -72,7 +72,7 @@ const touchLastUsed = (supabase, keyRow) => {
  * stored prefix/environment disagree with the token, and keys whose merchant no longer
  * exists are all rejected with the same 401. On success binds:
  *   req.merchant = { id, name, wallet_address }
- *   req.apiKey   = { id, name, prefix, environment }
+ *   req.apiKey   = { id, name, prefix, environment, tier }
  */
 const requireApiKey = (getSupabase) => async (req, res, next) => {
     const match = /^Bearer\s+(\S+)\s*$/i.exec(req.get('Authorization') ?? '');
@@ -106,6 +106,8 @@ const requireApiKey = (getSupabase) => async (req, res, next) => {
             name: keyRow.name,
             prefix: keyRow.key_prefix,
             environment: keyRow.environment,
+            // Rate limit quota tier (#231); keys created before tiers existed are free
+            tier: keyRow.rate_limit_tier || 'free',
             member_wallet: keyRow.organization_member_wallet || keyRow.merchants.wallet_address,
         };
         touchLastUsed(supabase, keyRow);

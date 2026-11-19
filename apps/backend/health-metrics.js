@@ -1,4 +1,81 @@
+const crypto = require('crypto');
 const client = require('prom-client');
+
+// Business metrics recorded by the pull and webhook code paths (#230). They live in
+// one process-wide registry so any module can record into it; /metrics merges it with
+// the per-app transport registry.
+const businessRegistry = new client.Registry();
+
+const pullDuration = new client.Histogram({
+    name: 'orbit_pull_duration_seconds',
+    help: 'Time spent waiting for Soroban confirmation of a pull transaction',
+    labelNames: ['status'],
+    buckets: [0.5, 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120],
+    registers: [businessRegistry],
+});
+const pullTotal = new client.Counter({
+    name: 'orbit_pull_total',
+    help: 'Pull transactions by confirmation outcome',
+    labelNames: ['status'],
+    registers: [businessRegistry],
+});
+const webhookDeliveryTotal = new client.Counter({
+    name: 'orbit_webhook_delivery_total',
+    help: 'Webhook delivery attempts by outcome; dead_lettered counts transfers to the DLQ',
+    labelNames: ['outcome'],
+    registers: [businessRegistry],
+});
+
+// Returns the pg pools to report on; index.js points this at the database manager
+let dbPoolSource = () => [];
+const setDbPoolSource = (source) => { dbPoolSource = typeof source === 'function' ? source : () => []; };
+new client.Gauge({
+    name: 'orbit_db_pool_active',
+    help: 'Checked-out (active) Postgres connections across the backend pg pools',
+    registers: [businessRegistry],
+    collect() {
+        let active = 0;
+        try {
+            // The report pool may be the primary pool itself, so count each pool once
+            for (const pool of new Set(dbPoolSource() || [])) {
+                if (pool) active += Math.max(0, (pool.totalCount || 0) - (pool.idleCount || 0));
+            }
+        } catch { /* a failing pool lookup must not break the scrape */ }
+        this.set(active);
+    },
+});
+
+const PULL_STATUSES = { SUCCESS: 'success', FAILED: 'failed' };
+
+// Records one pull outcome: SUCCESS -> success, FAILED -> failed, anything else
+// (still NOT_FOUND when polling gave up) -> timeout
+const recordPullOutcome = (confirmationStatus, durationSeconds) => {
+    const status = PULL_STATUSES[confirmationStatus] || 'timeout';
+    pullTotal.inc({ status });
+    if (Number.isFinite(durationSeconds) && durationSeconds >= 0) pullDuration.observe({ status }, durationSeconds);
+};
+
+const WEBHOOK_OUTCOMES = new Set(['success', 'failed', 'dead_lettered']);
+const recordWebhookDelivery = (outcome) => {
+    if (WEBHOOK_OUTCOMES.has(outcome)) webhookDeliveryTotal.inc({ outcome });
+};
+
+// /metrics is internal: it requires METRICS_TOKEN as a bearer token (or X-Metrics-Token).
+// Without a configured token the endpoint is closed rather than public.
+const metricsAuth = (getToken = () => process.env.METRICS_TOKEN) => (req, res, next) => {
+    const token = getToken();
+    if (!token) return res.status(403).json({ error: 'Metrics endpoint disabled: METRICS_TOKEN is not configured' });
+    const match = /^Bearer\s+(\S+)\s*$/i.exec(req.get('Authorization') ?? '');
+    const supplied = match ? match[1] : req.get('X-Metrics-Token');
+    if (!supplied) {
+        res.set('WWW-Authenticate', 'Bearer realm="orbit-metrics"');
+        return res.status(401).json({ error: 'Missing metrics token' });
+    }
+    const a = crypto.createHash('sha256').update(String(supplied)).digest();
+    const b = crypto.createHash('sha256').update(String(token)).digest();
+    if (!crypto.timingSafeEqual(a, b)) return res.status(403).json({ error: 'Invalid metrics token' });
+    next();
+};
 
 function createObservability({ getSupabase, getSorobanServer, rpcUrl, registry = new client.Registry() }) {
     client.collectDefaultMetrics({ register: registry, prefix: 'orbit_' });
@@ -32,7 +109,16 @@ function registerHealthMetrics(app, options) {
             return res.status(503).json({ ready: false, checks: { ledger_indexer: e.message } });
         }
     });
-    app.get('/metrics', async (req, res) => { await obs.collectBusinessMetrics(); res.set('Content-Type', obs.registry.contentType); res.send(await obs.registry.metrics()); });
+    const metricsRegistry = client.Registry.merge([obs.registry, businessRegistry]);
+    app.get('/metrics', metricsAuth(options.getMetricsToken), async (req, res) => { await obs.collectBusinessMetrics(); res.set('Content-Type', metricsRegistry.contentType); res.send(await metricsRegistry.metrics()); });
     return obs;
 }
-module.exports = { createObservability, registerHealthMetrics };
+module.exports = {
+    createObservability,
+    registerHealthMetrics,
+    businessRegistry,
+    metricsAuth,
+    recordPullOutcome,
+    recordWebhookDelivery,
+    setDbPoolSource,
+};

@@ -3,7 +3,12 @@ import express from 'express';
 import request from 'supertest';
 import app from '../index.js';
 import { generateApiKey, hashApiKey, parseApiKey } from '../apiKeys.js';
-import { createRateLimiter } from '../rateLimit.js';
+import {
+  createRateLimiter,
+  apiKeyTierLimit,
+  apiKeyTierLimitsFromEnv,
+  resolveApiKeyTier,
+} from '../rateLimit.js';
 import { makeApiKey } from './helpers.js';
 
 describe('API key authentication', () => {
@@ -173,9 +178,24 @@ describe('API key authentication', () => {
 
       const res = await getSubscribers().set('Authorization', apiKey.header);
 
-      expect(res.headers['ratelimit-limit']).toBe('100');
-      expect(res.headers['ratelimit-remaining']).toBe('99');
+      // Free tier quota (#231)
+      expect(res.headers['ratelimit-limit']).toBe('60');
+      expect(res.headers['ratelimit-remaining']).toBe('59');
       expect(res.headers['ratelimit-reset']).toBe('60');
+      expect(res.headers['x-ratelimit-limit']).toBe('60');
+      expect(res.headers['x-ratelimit-remaining']).toBe('59');
+      expect(Number(res.headers['x-ratelimit-reset'])).toBeGreaterThan(Date.now() / 1000);
+    });
+
+    it('applies the pro tier quota to pro keys', async () => {
+      const proKey = makeApiKey({ merchantId: validMerchantId, walletAddress: validStellarAddress, rate_limit_tier: 'pro' });
+      mockSupabase.maybeSingle.mockResolvedValue({ data: proKey.row, error: null });
+      mockSupabase.eq.mockReturnValueOnce(mockSupabase).mockResolvedValueOnce({ data: [], error: null });
+
+      const res = await getSubscribers().set('Authorization', proKey.header);
+
+      expect(res.headers['x-ratelimit-limit']).toBe('600');
+      expect(res.headers['x-ratelimit-remaining']).toBe('599');
     });
   });
 
@@ -282,6 +302,58 @@ describe('API key authentication', () => {
   });
 });
 
+describe('API key rate limit tiers (#231)', () => {
+  it('defaults to 60 requests for free keys and 600 for pro keys', () => {
+    const quota = apiKeyTierLimit();
+    expect(quota({ apiKey: { tier: 'free' } })).toBe(60);
+    expect(quota({ apiKey: { tier: 'pro' } })).toBe(600);
+  });
+
+  it('treats unknown or missing tiers as free', () => {
+    expect(resolveApiKeyTier({ apiKey: { tier: 'enterprise' } })).toBe('free');
+    expect(resolveApiKeyTier({ apiKey: {} })).toBe('free');
+    expect(resolveApiKeyTier({})).toBe('free');
+  });
+
+  it('reads tier quotas from the environment, keeping API_KEY_RATE_LIMIT_MAX for free keys', () => {
+    expect(apiKeyTierLimitsFromEnv({})).toEqual({ free: 60, pro: 600 });
+    expect(apiKeyTierLimitsFromEnv({ API_KEY_RATE_LIMIT_MAX: '100' })).toEqual({ free: 100, pro: 600 });
+    expect(apiKeyTierLimitsFromEnv({ API_KEY_FREE_TIER_LIMIT: '30', API_KEY_PRO_TIER_LIMIT: '900', API_KEY_RATE_LIMIT_MAX: '100' }))
+      .toEqual({ free: 30, pro: 900 });
+  });
+
+  it('rejects a free key with 429 and its tier after 60 requests in the window', async () => {
+    let clock = 0;
+    const limiter = createRateLimiter({
+      windowMs: 60_000,
+      limit: apiKeyTierLimit(),
+      keyGenerator: (req) => req.apiKey.id,
+      now: () => clock,
+      describe: (req) => ({ tier: resolveApiKeyTier(req) }),
+    });
+    limiter.stop();
+    const tierApp = express();
+    tierApp.use((req, res, next) => { req.apiKey = { id: req.get('X-Key'), tier: req.get('X-Tier') }; next(); });
+    tierApp.use(limiter);
+    tierApp.get('/', (req, res) => res.json({ ok: true }));
+    const call = (key, tier) => request(tierApp).get('/').set('X-Key', key).set('X-Tier', tier);
+
+    for (let i = 0; i < 60; i++) expect((await call('free-key', 'free')).status).toBe(200);
+    const blocked = await call('free-key', 'free');
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toMatchObject({ code: 'rate_limit_exceeded', limit: 60, tier: 'free', retry_after: 60 });
+
+    // A pro key is still well within its own quota
+    expect((await call('pro-key', 'pro')).headers['x-ratelimit-remaining']).toBe('599');
+
+    // Window expiry restores the free key's full quota
+    clock += 60_001;
+    const reset = await call('free-key', 'free');
+    expect(reset.status).toBe(200);
+    expect(reset.headers['x-ratelimit-remaining']).toBe('59');
+  });
+});
+
 describe('Sliding-window rate limiter', () => {
   let clock;
   let limiter;
@@ -323,6 +395,42 @@ describe('Sliding-window rate limiter', () => {
     expect(res.status).toBe(429);
     expect(res.headers['ratelimit-remaining']).toBe('0');
     expect(res.headers['retry-after']).toBe('6');
+  });
+
+  it('sets X-RateLimit headers with an absolute reset time', async () => {
+    const first = await hit();
+    expect(first.headers['x-ratelimit-limit']).toBe('3');
+    expect(first.headers['x-ratelimit-remaining']).toBe('2');
+    // clock = 1_000_000 ms = 1000 s; the first request leaves the 10 s window at 1010 s
+    expect(first.headers['x-ratelimit-reset']).toBe('1010');
+  });
+
+  it('returns a structured 429 body with Retry-After seconds', async () => {
+    await hit(); await hit(); await hit();
+    clock += 4_000;
+
+    const res = await hit();
+
+    expect(res.status).toBe(429);
+    expect(res.headers['x-ratelimit-remaining']).toBe('0');
+    expect(res.body).toEqual({
+      error: 'Too many requests, please retry later',
+      code: 'rate_limit_exceeded',
+      limit: 3,
+      remaining: 0,
+      retry_after: 6,
+      reset_at: new Date(1010 * 1000).toISOString(),
+    });
+  });
+
+  it('resets the limit once the window expires', async () => {
+    await hit(); await hit(); await hit();
+    expect((await hit()).status).toBe(429);
+
+    clock += 10_001;
+    const res = await hit();
+    expect(res.status).toBe(200);
+    expect(res.headers['x-ratelimit-remaining']).toBe('2');
   });
 
   it('frees capacity as individual requests slide out of the window', async () => {
