@@ -21,10 +21,10 @@ export function ApiPlayground({ keys }: { keys: ApiKeyRecord[] }) {
   const snippet = useMemo(() => {
     const url = `https://api.orbit.example${selected.path}`;
     if (language === "curl") return `curl -X ${selected.method} '${url}' -H 'Authorization: Bearer $ORBIT_API_KEY' -H 'Content-Type: application/json'${selected.method === "POST" ? ` --data '${payload.replace(/'/g, "'\\''")}'` : ""}`;
-    if (language === "python") return `import os, requests\nresponse = requests.request("${selected.method}", "${url}", headers={"Authorization": "Bearer " + os.environ["ORBIT_API_KEY"]}, ${selected.method === "POST" ? "json=" + JSON.stringify(JSON.parseSafePlaceholder) : ""})`;
+    if (language === "python") return `import os, requests\nresponse = requests.request("${selected.method}", "${url}", headers={"Authorization": "Bearer " + os.environ["ORBIT_API_KEY"]}, ${selected.method === "POST" ? "json=" + JSON.stringify({ subscription_id: "" }) : ""})`;
     return `const response = await fetch("${url}", { method: "${selected.method}", headers: { Authorization: \`Bearer \${process.env.ORBIT_API_KEY}\` }${selected.method === "POST" ? ", body: JSON.stringify({ subscription_id: \"\" })" : ""} });\nconsole.log(await response.json());`;
   }, [selected, language, payload]);
-  const safeSnippet = snippet.replace("undefined", "{}").replace("JSON.parseSafePlaceholder", "{}");
+  const safeSnippet = snippet;
   function run() {
     try {
       const params = selected.method === "POST" ? JSON.parse(payload) : null;
