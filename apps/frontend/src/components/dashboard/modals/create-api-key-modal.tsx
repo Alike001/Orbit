@@ -12,6 +12,8 @@ interface CreateApiKeyModalProps {
 
 export function CreateApiKeyModal({ isOpen, onClose, onCreateKey }: CreateApiKeyModalProps) {
   const [step, setStep] = useState<1 | 2>(1);
+  const [scopes, setScopes] = useState<string[]>(["subscribers:read"]);
+  const availableScopes = ["pull:execute", "plans:write", "subscribers:read", "webhooks:admin"];
   const [keyName, setKeyName] = useState("");
   const [environment, setEnvironment] = useState<"test" | "live">("live");
   const [generatedKey, setGeneratedKey] = useState<ApiKeyRecord | null>(null);
@@ -21,21 +23,20 @@ export function CreateApiKeyModal({ isOpen, onClose, onCreateKey }: CreateApiKey
 
   const handleGenerate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!keyName.trim()) return;
+    if (!keyName.trim() || scopes.length === 0) return;
 
-    const randomSuffix = Array.from({ length: 32 }, () =>
-      Math.floor(Math.random() * 36).toString(36)
-    ).join("");
+    const randomSuffix = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
     const prefix = environment === "live" ? "orb_live" : "orb_test";
     const fullKey = `${prefix}_${randomSuffix}`;
 
     const newKeyRecord: ApiKeyRecord = {
-      id: `key_${Math.random().toString(36).substring(2, 8)}`,
+      id: `key_${crypto.randomUUID()}`,
       name: keyName.trim(),
       keyPrefix: `${prefix}_...${randomSuffix.slice(-4)}`,
       fullKeyPreview: fullKey,
       environment,
+      scopes,
       lastUsed: "Never",
       createdAt: new Date().toISOString(),
     };
@@ -49,6 +50,7 @@ export function CreateApiKeyModal({ isOpen, onClose, onCreateKey }: CreateApiKey
     setStep(1);
     setKeyName("");
     setEnvironment("live");
+    setScopes(["subscribers:read"]);
     setGeneratedKey(null);
     setCopied(false);
     onClose();
@@ -148,6 +150,7 @@ export function CreateApiKeyModal({ isOpen, onClose, onCreateKey }: CreateApiKey
               </div>
             </div>
 
+            <fieldset className="rounded-lg border border-black/10 p-3"><legend className="text-xs font-semibold">Permission scopes</legend><div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{availableScopes.map(scope => <label key={scope} className="flex gap-2 items-center text-xs"><input type="checkbox" checked={scopes.includes(scope)} onChange={e => setScopes(prev => e.target.checked ? [...prev, scope] : prev.filter(item => item !== scope))} />{scope}</label>)}</div><p className="text-xs text-amber-700 mt-2">Scopes are saved as UI metadata; backend enforcement is required before these keys can safely grant access.</p></fieldset>
             <div className="p-3.5 rounded-lg bg-neutral-50 border border-black/5 text-xs text-neutral-600 flex items-start gap-2.5">
               <ShieldCheck size={16} className="text-black shrink-0 mt-0.5" />
               <div>
@@ -166,6 +169,7 @@ export function CreateApiKeyModal({ isOpen, onClose, onCreateKey }: CreateApiKey
               </button>
               <button
                 type="submit"
+                disabled={scopes.length === 0}
                 className="button button-primary text-xs h-9 px-4"
               >
                 Generate Secret Key
