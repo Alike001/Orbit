@@ -19,6 +19,8 @@ import {
 import { useTranslations } from "next-intl";
 import { MerchantUser, useAuth } from "@/lib/auth-context";
 import { connectFreighter } from "@/lib/freighter";
+import { getWalletAdapter, type WalletProvider } from "@/lib/wallet-adapters";
+import { WalletSelectionModal } from "../modals/wallet-selection-modal";
 import { signMessage } from "@stellar/freighter-api";
 import { AnalyticsRange, MerchantAnalytics, getAnalyticsChallenge, verifyAnalyticsSignature,
   fetchMerchantAnalytics, formatRawUsdc, plotVerifiedRevenue } from "@/lib/merchant-analytics";
@@ -50,23 +52,24 @@ export function OverviewView({
   const { updateWallet } = useAuth();
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectError, setConnectError] = useState("");
+  const [walletSelectorOpen, setWalletSelectorOpen] = useState(false);
 
   // No placeholder: the settlement address only exists once a wallet is linked.
   const settlementAddress = user.walletAddress || user.linkedVaults?.stellar || "";
   const isConnected = Boolean(settlementAddress);
 
-  const handleConnectWallet = async () => {
+  const handleConnectWallet = async (provider: WalletProvider) => {
     setConnectError("");
     setIsConnecting(true);
-
-    const result = await connectFreighter();
-    if (result.ok) {
-      updateWallet(result.address);
-    } else {
-      setConnectError(result.error);
+    try {
+      const address = await getWalletAdapter(provider).connect();
+      updateWallet(address, provider);
+      setWalletSelectorOpen(false);
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : "Could not connect wallet");
+    } finally {
+      setIsConnecting(false);
     }
-
-    setIsConnecting(false);
   };
 
   const [analyticsToken, setAnalyticsToken] = useState<string | null>(null);
@@ -190,7 +193,7 @@ const session = await verifyAnalyticsSignature(
             </div>
           </div>
           <button
-            onClick={handleConnectWallet}
+            onClick={() => { setConnectError(""); setWalletSelectorOpen(true); }}
             disabled={isConnecting}
             className="button button-secondary text-xs h-9 px-3 shrink-0 self-start md:self-auto inline-flex items-center gap-1.5 disabled:opacity-60"
           >
@@ -525,6 +528,7 @@ const session = await verifyAnalyticsSignature(
           ))}
         </div>
       </div>
+      <WalletSelectionModal isOpen={walletSelectorOpen} busy={isConnecting} error={connectError} onSelect={handleConnectWallet} onClose={() => setWalletSelectorOpen(false)} />
     </div>
   );
 }

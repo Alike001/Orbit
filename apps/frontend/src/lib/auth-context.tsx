@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { setMerchantApiKey } from "@/lib/api";
 import { getAddress, getNetwork, isConnected } from "@stellar/freighter-api";
+import { clearWalletProvider, persistWalletProvider, type WalletProvider } from "@/lib/wallet-adapters";
 
 export interface LinkedVaults {
   stellar?: string;
@@ -14,7 +15,7 @@ export interface MerchantUser {
   email: string;
   businessName: string;
   walletAddress?: string;
-  walletProvider?: "freighter";
+  walletProvider?: WalletProvider;
   customContractId?: string;
   linkedVaults?: LinkedVaults;
   createdAt: string;
@@ -36,8 +37,8 @@ interface AuthContextType {
     password?: string,
     businessName?: string
   ) => Promise<{ success: boolean; error?: string }>;
-  signInWithWallet: (walletAddress: string) => Promise<{ success: boolean; error?: string }>;
-  updateWallet: (walletAddress: string) => void;
+  signInWithWallet: (walletAddress: string, provider?: WalletProvider) => Promise<{ success: boolean; error?: string }>;
+  updateWallet: (walletAddress: string, provider?: WalletProvider) => void;
   updateVault: (chain: "stellar", address: string) => void;
   updateContractId: (contractId: string) => void;
   updateBusinessName: (businessName: string) => void;
@@ -206,7 +207,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signInWithWallet = async (
-    walletAddress: string
+    walletAddress: string,
+    provider: WalletProvider = "freighter"
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       if (!walletAddress || walletAddress.length < 10) {
@@ -219,11 +221,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: `merchant_${shortAddr.toLowerCase()}@orbit.network`,
         businessName: `Merchant (${shortAddr})`,
         walletAddress: walletAddress.trim(),
-        walletProvider: "freighter",
+        walletProvider: provider,
         createdAt: new Date().toISOString(),
       };
 
       saveUserSession(userData);
+      persistWalletProvider(provider);
       return { success: true };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Wallet sign-in failed";
@@ -231,19 +234,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const updateWallet = (walletAddress: string) => {
+  const updateWallet = (walletAddress: string, provider: WalletProvider = "freighter") => {
     if (!user) return;
     const trimmed = walletAddress.trim();
     const updated = {
       ...user,
       walletAddress: trimmed,
-      walletProvider: "freighter" as const,
+      walletProvider: provider,
       linkedVaults: {
         ...user.linkedVaults,
         stellar: trimmed,
       },
     };
     saveUserSession(updated);
+    persistWalletProvider(provider);
   };
 
   const updateVault = (chain: "stellar", address: string) => {
@@ -289,10 +293,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user) return;
     saveUserSession({ ...user, walletAddress: undefined, walletProvider: undefined, linkedVaults: { ...user.linkedVaults, stellar: undefined } });
     setWalletNetworkWarning(null);
+    clearWalletProvider();
   };
 
   const signOut = () => {
     setUser(null);
+    clearWalletProvider();
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (err) {

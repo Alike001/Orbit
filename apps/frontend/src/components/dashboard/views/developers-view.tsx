@@ -220,6 +220,8 @@ export function DevelopersView() {
   const [isDeliveryDrawerOpen, setIsDeliveryDrawerOpen] = useState(false);
   const [deliveryFilter, setDeliveryFilter] = useState<"all" | "success" | "failed">("all");
   const [deliverySearch, setDeliverySearch] = useState("");
+  const [deliveryPage, setDeliveryPage] = useState(1);
+  const deliveryPageSize = 10;
   const [resendingId, setResendingId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
@@ -493,7 +495,11 @@ export function DevelopersView() {
     setResendingId(del.id);
     try {
       if (user?.id) {
-        await resendWebhookDelivery(del.id);
+        const result = await resendWebhookDelivery(del.id);
+        setDeliveries(prev => prev.map(item => item.id === del.id ? result.delivery : item));
+        setSelectedDelivery(prev => prev?.id === del.id ? result.delivery : prev);
+        showNotification("success", "Replay requested. Delivery status updated from the API.");
+        return;
       }
       await new Promise((r) => setTimeout(r, 600));
 
@@ -537,12 +543,16 @@ export function DevelopersView() {
   const filteredDeliveries = deliveries.filter((d) => {
     const matchesSearch =
       d.event_type.toLowerCase().includes(deliverySearch.toLowerCase()) ||
+      String(d.response_status ?? "").includes(deliverySearch.trim()) ||
       d.id.toLowerCase().includes(deliverySearch.toLowerCase()) ||
       (d.webhooks?.url || "").toLowerCase().includes(deliverySearch.toLowerCase());
 
     if (deliveryFilter === "all") return matchesSearch;
     return matchesSearch && d.status === deliveryFilter;
   });
+
+  const totalDeliveryPages = Math.max(1, Math.ceil(filteredDeliveries.length / deliveryPageSize));
+  const visibleDeliveries = filteredDeliveries.slice((Math.min(deliveryPage, totalDeliveryPages) - 1) * deliveryPageSize, Math.min(deliveryPage, totalDeliveryPages) * deliveryPageSize);
 
   // Code snippets
   const copySnippet = (text: string) => {
@@ -1343,13 +1353,14 @@ print(f"Settled on Stellar: {pull.tx_hash}")`;
                 <th className="py-3 px-4">{t("deliveries.event")}</th>
                 <th className="py-3 px-4">{t("deliveries.endpoint")}</th>
                 <th className="py-3 px-4">{t("deliveries.dispatched")}</th>
+                <th className="py-3 px-4">Latency</th>
                 <th className="py-3 px-4">{t("deliveries.attempts")}</th>
                 <th className="py-3 px-4 text-right">{t("deliveries.actions")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-black/5 text-neutral-700">
               {filteredDeliveries.length > 0 ? (
-                filteredDeliveries.map((del) => {
+                visibleDeliveries.map((del) => {
                   const isSuccess = del.status === "success" || (del.response_status && del.response_status >= 200 && del.response_status < 300);
                   const isResendingThis = resendingId === del.id;
 
@@ -1389,6 +1400,7 @@ print(f"Settled on Stellar: {pull.tx_hash}")`;
                         {new Date(del.created_at).toLocaleTimeString()} · {new Date(del.created_at).toLocaleDateString()}
                       </td>
 
+                      <td className="py-3 px-4 font-mono text-[11px]">{typeof del.latency_ms === "number" ? `${del.latency_ms}ms` : "—"}</td>
                       <td className="py-3 px-4 font-mono text-[11px]">
                         #{del.attempt_count}
                       </td>
@@ -1426,7 +1438,7 @@ print(f"Settled on Stellar: {pull.tx_hash}")`;
                 })
               ) : (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-neutral-500 text-xs">
+                  <td colSpan={7} className="py-8 text-center text-neutral-500 text-xs">
                     No delivery records match your filter.
                   </td>
                 </tr>
@@ -1436,6 +1448,13 @@ print(f"Settled on Stellar: {pull.tx_hash}")`;
         </div>
       </div>
 
+      <div className="flex items-center justify-between gap-3 text-xs text-neutral-600">
+        <span>Delivery page {Math.min(deliveryPage, totalDeliveryPages)} of {totalDeliveryPages} ({filteredDeliveries.length} entries)</span>
+        <div className="flex gap-2">
+          <button className="button button-secondary px-3 py-2 disabled:opacity-40" disabled={deliveryPage <= 1} onClick={() => setDeliveryPage(p => Math.max(1, p - 1))}>Previous</button>
+          <button className="button button-secondary px-3 py-2 disabled:opacity-40" disabled={deliveryPage >= totalDeliveryPages} onClick={() => setDeliveryPage(p => Math.min(totalDeliveryPages, p + 1))}>Next</button>
+        </div>
+      </div>
       {/* 6. Interactive Programmatic Usage API Snippets */}
       <div className="rounded-xl border border-black/10 bg-white p-6 shadow-xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-black/5">

@@ -129,9 +129,37 @@ export function PayrollView() {
   const [isSimulationOpen, setIsSimulationOpen] = useState(false);
   const [simulationResult, setSimulationResult] = useState<PayrollSimulationResult | null>(null);
   const [uploadErrors, setUploadErrors] = useState<RowValidationError[]>([]);
+  const [editedAmounts, setEditedAmounts] = useState<Record<string, string>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const duplicates = useMemo(() => duplicateWallets(recipients), [recipients]);
+  const preflightErrors = useMemo(() => {
+    const errors = new Map<string, string[]>();
+    for (const row of recipients) {
+      if (row.status === "disbursed") continue;
+      const problems: string[] = [];
+      if (!row.name.trim()) problems.push("Missing recipient name");
+      if (!StrKey.isValidEd25519PublicKey(row.walletAddress.trim())) problems.push("Invalid Stellar address/checksum");
+      if (parsePayrollAmount(editedAmounts[row.id] ?? String(row.amount)) === null) problems.push("Invalid, zero or negative USDC amount");
+      if (duplicates.has(row.walletAddress)) problems.push("Duplicate wallet address");
+      if (problems.length) errors.set(row.id, problems);
+    }
+    return errors;
+  }, [recipients, editedAmounts, duplicates]);
+  const canDisburse = recipients.length > 0 && recipients.every(row => row.status === "ready") &&
+    preflightErrors.size === 0 && uploadErrors.length === 0;
+  const editRecipient = (id: string, field: "name" | "role" | "walletAddress" | "amount", value: string) => {
+    if (field === "amount") setEditedAmounts(prev => ({...prev, [id]: value}));
+    setRecipients(prev => prev.map(row => {
+      if (row.id !== id || row.status === "disbursed") return row;
+      const updated = {...row};
+      if (field === "amount") updated.amount = parsePayrollAmount(value) ?? 0;
+      else updated[field] = value;
+      updated.status = updated.name.trim() && StrKey.isValidEd25519PublicKey(updated.walletAddress.trim()) &&
+        parsePayrollAmount(field === "amount" ? value : (editedAmounts[id] ?? String(updated.amount))) !== null ? "ready" : "failed";
+      return updated;
+    }));
+  };
   const visibleRecipients = useMemo(() => filterAndSortRecipients(recipients, deferredSearch, sortColumn, sortDirection),
     [recipients, deferredSearch, sortColumn, sortDirection]);
 
@@ -331,6 +359,7 @@ export function PayrollView() {
     setRecipients(SAMPLE_RECIPIENTS);
     setDisbursedSuccess(null);
     setUploadErrors([]);
+    setEditedAmounts({});
   };
 
   const handleDownloadTemplate = () => {
@@ -362,8 +391,8 @@ export function PayrollView() {
           return;
         }
 
-        const errors: RowValidationError[] = [];
-        const validRecipients: PayrollRecipient[] = [];
+        const parsedRecipients: PayrollRecipient[] = [];
+        const invalidAmounts: Record<string, string> = {};
 
         // Check if the first row is a header row
         // A header row contains header keywords and does not have a valid Stellar Ed25519 key
@@ -393,18 +422,11 @@ export function PayrollView() {
             continue;
           }
 
-          if (parts.length < 3) {
-            errors.push({
-              row: rowNum,
-              reason: `Insufficient columns (${parts.length} found, expected at least 3: Name, [Role], StellarWallet, AmountUSDC)`,
-            });
-            continue;
-          }
 
           const name = parts[0] || `Recipient ${rowNum}`;
           const role = parts.length >= 4 ? parts[1] || "Contractor" : "Contractor";
-          const wallet = parts.length >= 4 ? parts[2] : parts[1];
-          const rawAmount = parts.length >= 4 ? parts[3] : parts[2];
+          const wallet = (parts.length >= 4 ? parts[2] : parts[1]) || "";
+          const rawAmount = (parts.length >= 4 ? parts[3] : parts[2]) || "";
 
           const rowReasons: string[] = [];
 
@@ -424,27 +446,18 @@ export function PayrollView() {
             }
           }
 
-          if (rowReasons.length > 0) {
-            errors.push({
-              row: rowNum,
-              reason: rowReasons.join(", "),
-            });
-          } else {
-            validRecipients.push({
-              id: `rec_csv_${rowNum}_${Math.random().toString(36).substring(2, 6)}`,
-              name,
-              role,
-              walletAddress: wallet,
-              amount: parsePayrollAmount(rawAmount)!,
-              network: "stellar-testnet",
-              status: "ready",
-            });
-          }
+          const id = `rec_csv_${rowNum}_${Math.random().toString(36).substring(2, 6)}`;
+          if (rowReasons.length) invalidAmounts[id] = rawAmount || "";
+          parsedRecipients.push({
+            id, name, role, walletAddress: wallet,
+            amount: parsePayrollAmount(rawAmount) ?? 0,
+            network: "stellar-testnet", status: rowReasons.length ? "failed" : "ready",
+          });
         }
 
-        setUploadErrors(errors);
-
-        setRecipients(validRecipients);
+        setUploadErrors(results.errors.map(err => ({row: err.row === undefined ? 0 : err.row + 1, reason: err.message})));
+        setEditedAmounts(invalidAmounts);
+        setRecipients(parsedRecipients);
         setDisbursedSuccess(null);
       },
       error: (error) => {
@@ -505,7 +518,7 @@ export function PayrollView() {
 
   // Run Batch Payroll Trigger (simulates on-chain Soroban batch_disburse execution)
   const handleRunBatchPayroll = () => {
-    if (readyCount === 0 || !canRunPayroll || duplicates.size > 0) return;
+    if (!canDisburse || !canRunPayroll) return;
     setIsExecuting(true);
     setDisbursedSuccess(null);
 
@@ -1107,7 +1120,7 @@ export function PayrollView() {
 
           <button
             onClick={handleRunBatchPayroll}
-            disabled={isExecuting || readyCount === 0 || !canRunPayroll || duplicates.size > 0}
+            disabled={isExecuting || !canDisburse || !canRunPayroll}
             title={canRunPayroll ? undefined : t("payroll.noPermission")}
             className="w-full mt-3 button bg-white text-black hover:bg-neutral-100 font-bold text-xs h-10 px-4 flex items-center justify-center gap-2 disabled:opacity-50 transition-all cursor-pointer shadow-xs"
           >
@@ -1246,21 +1259,19 @@ export function PayrollView() {
               </thead>
               <tbody className="divide-y divide-black/5 text-neutral-700">
                 {visibleRecipients.map((rec) => (
-                  <tr key={rec.id} className={duplicates.has(rec.walletAddress) && rec.status === "ready" ? "bg-amber-50" : "hover:bg-neutral-50/50 transition-colors"}>
+                  <tr key={rec.id} className={preflightErrors.has(rec.id) ? "bg-red-50" : "hover:bg-neutral-50/50 transition-colors"}>
                     <td className="py-4 px-5 font-semibold text-black">
-                      {rec.name}
-                      {duplicates.has(rec.walletAddress) && rec.status === "ready" && <span className="ml-2 text-amber-800">Duplicate wallet</span>}
+                      <input aria-label="Recipient name" value={rec.name} disabled={rec.status === "disbursed"} onChange={e => editRecipient(rec.id, "name", e.target.value)} className="w-32 rounded border border-black/10 p-2" />
+                      {preflightErrors.has(rec.id) && <div role="alert" className="text-red-700 text-[10px]">{preflightErrors.get(rec.id)?.join("; ")}</div>}
                     </td>
 
                     <td className="py-4 px-4 text-neutral-600">
-                      {rec.role}
+                      <input aria-label="Recipient role" value={rec.role} disabled={rec.status === "disbursed"} onChange={e => editRecipient(rec.id, "role", e.target.value)} className="w-28 rounded border border-black/10 p-2" />
                     </td>
 
                     <td className="py-4 px-4">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs text-neutral-700">
-                          {rec.walletAddress.slice(0, 6)}...{rec.walletAddress.slice(-6)}
-                        </span>
+                        <input aria-label="Stellar wallet" value={rec.walletAddress} disabled={rec.status === "disbursed"} onChange={e => editRecipient(rec.id, "walletAddress", e.target.value)} className="w-52 rounded border border-black/10 p-2 font-mono" />
                         <button
                           onClick={() => copyToClipboard(rec.walletAddress, rec.id)}
                           className="p-1 rounded hover:bg-black/5 text-neutral-400 hover:text-black transition-colors"
@@ -1285,7 +1296,7 @@ export function PayrollView() {
                     </td>
 
                     <td className="py-4 px-4 font-mono font-bold text-black text-sm">
-                      <PriceDisplay amount={rec.amount} />
+                      <input aria-label="USDC amount" inputMode="decimal" value={editedAmounts[rec.id] ?? String(rec.amount)} disabled={rec.status === "disbursed"} onChange={e => editRecipient(rec.id, "amount", e.target.value)} className="w-24 rounded border border-black/10 p-2" />
                     </td>
 
                     <td className="py-4 px-4">
@@ -1296,7 +1307,7 @@ export function PayrollView() {
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 border border-black/5 font-medium">
-                          READY
+                          {preflightErrors.has(rec.id) ? "FIX REQUIRED" : "READY"}
                         </span>
                       )}
                     </td>

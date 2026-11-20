@@ -10,7 +10,8 @@ import {
   rpc,
   xdr,
 } from "@stellar/stellar-sdk";
-import { getAddress, isConnected, requestAccess, signTransaction } from "@stellar/freighter-api";
+import freighterApi from "@stellar/freighter-api";
+const { getAddress, isConnected, requestAccess, signTransaction } = freighterApi;
 
 export const MILESTONE_CONTRACT_ID = process.env.NEXT_PUBLIC_ORBIT_CONTRACT_ID || "";
 export const MILESTONE_TOKEN_ID = process.env.NEXT_PUBLIC_USDC_CONTRACT_ID || "";

@@ -95,6 +95,7 @@ export interface WebhookDeliveryLog {
   payload: Record<string, unknown>;
   request_headers?: Record<string, string>;
   response_status?: number;
+  latency_ms?: number;
   response_body?: string;
   attempt_count: number;
   status: "success" | "failed";
