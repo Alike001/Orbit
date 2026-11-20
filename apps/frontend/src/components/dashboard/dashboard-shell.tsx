@@ -55,6 +55,7 @@ import { VaultModal } from "./modals/vault-modal";
 import { DeployVaultModal } from "./modals/deploy-vault-modal";
 import { ReportsTaxWizardModal } from "./modals/reports-tax-wizard-modal";
 import { NotificationDrawer } from "./drawers/notification-drawer";
+import { NotificationToasts } from "./notification-toasts";
 import { DOCS_URL } from "@/lib/links";
 
 export function DashboardShell() {
@@ -550,6 +551,7 @@ export function DashboardShell() {
 
       {/* Real-time Notifications Drawer */}
       <NotificationDrawer />
+      <NotificationToasts />
     </div>
   );
 }
