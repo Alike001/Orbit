@@ -15,7 +15,7 @@ export function CreatePlanModal({ isOpen, onClose, onCreatePlan }: CreatePlanMod
   const [currency, setCurrency] = useState<"USDC" | "EURC">("USDC");
   const [billingModel, setBillingModel] = useState<"fixed" | "tiered" | "metered">("fixed");
   const [trialDays, setTrialDays] = useState("0");
-  const [graceDays, setGraceDays] = useState("3");
+  const [graceDays, setGraceDays] = useState("0");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("29");
   const [intervalDays, setIntervalDays] = useState("30");
@@ -29,7 +29,7 @@ export function CreatePlanModal({ isOpen, onClose, onCreatePlan }: CreatePlanMod
     e.preventDefault();
     if (!name.trim() || !Number.isFinite(Number(amount)) || Number(amount) <= 0.1 || ![7,30,90,365].includes(Number(intervalDays))) return;
 
-    const newPlanId = `plan_${name.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 12)}_${Math.random().toString(36).substring(2, 6)}`;
+    const newPlanId = `plan_${name.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 12)}_${crypto.randomUUID().slice(0, 8)}`;
     const newPlan: SubscriptionPlan = {
       id: newPlanId,
       name: name.trim(),
@@ -52,7 +52,7 @@ export function CreatePlanModal({ isOpen, onClose, onCreatePlan }: CreatePlanMod
     setCurrency("USDC");
     setBillingModel("fixed");
     setTrialDays("0");
-    setGraceDays("3");
+    setGraceDays("0");
     setName("");
     setAmount("29");
     setIntervalDays("30");
