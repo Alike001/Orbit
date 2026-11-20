@@ -123,6 +123,23 @@ The underlying Soroban smart contract (`contracts/soroban/src/lib.rs`) strictly 
 
 ---
 
+### State Archival & Storage TTL Policy
+
+Soroban contracts use rent-based state archival where unmaintained persistent entries can expire and be moved to cold archival. In subscription architectures with long billing cycles (such as quarterly or yearly plans), vaults could expire between payment pulls, causing legitimate pulls to fail with `"Vault does not exist"`.
+
+To guarantee continuous availability without manual restoration hurdles:
+1. **Automatic Extension on Lifecycle Events:**
+   * Both `create_vault` and `pull_funds` invoke `env.storage().persistent().extend_ttl(&key, threshold, extend_to)`.
+   * The contract instance TTL is also extended concurrently via `env.storage().instance().extend_ttl(threshold, extend_to)`.
+2. **Parameters & Buffer Constants (`contracts/soroban/src/lib.rs`):**
+   * `SECONDS_PER_LEDGER = 5`: Assumed Stellar ledger generation time.
+   * `TTL_MARGIN_LEDGERS = 120_960`: 7-day safety margin added on top of the calculated interval ledgers.
+   * `MIN_TTL_LEDGERS = 518_400`: 30-day baseline floor ensuring even short-interval vaults maintain high persistence.
+   * `TTL_THRESHOLD_LEDGERS = 120_960`: 7-day threshold below which storage TTL will be extended.
+   * Dynamic calculation: `extend_to = max(interval_seconds / 5 + margin, MIN_TTL_LEDGERS)`, ensuring the vault remains live across the entire subscription period plus buffer.
+
+---
+
 ## 4. Technical Architecture Verification
 
 When building Web3 infrastructure, the core blockchain primitives must be verified through automated tests:

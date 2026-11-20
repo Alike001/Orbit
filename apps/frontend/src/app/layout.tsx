@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import "./globals.css";
 import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
@@ -27,28 +28,46 @@ export const metadata: Metadata = {
   },
 };
 
+import { DashboardThemeProvider } from "@/lib/dashboard-theme";
+import { FiatRatesProvider } from "@/lib/fiat-rates";
 import { AuthProvider } from "@/lib/auth-context";
+import { NotificationProvider } from "@/lib/notification-context";
+import { ToastNotificationCenter } from "@/components/ui/toast-notification-center";
+import { I18nProvider } from "@/i18n/provider";
+import { LOCALE_COOKIE, defaultLocale, isLocale } from "@/i18n/config";
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const cookieLocale = (await cookies()).get(LOCALE_COOKIE)?.value;
+  const locale = isLocale(cookieLocale) ? cookieLocale : defaultLocale;
+
   return (
-    <html lang="en">
+    <html lang={locale} suppressHydrationWarning>
       <head>
         <link rel="icon" href="/favicon-badge.png?v=3" type="image/png" />
         <link rel="shortcut icon" href="/favicon-badge.png?v=3" type="image/png" />
         <link rel="apple-touch-icon" href="/favicon-badge.png?v=3" />
       </head>
       <body className="min-h-screen bg-[#FAFAFB] text-[#09090B] selection:bg-black selection:text-white antialiased">
-        <AuthProvider>
-          <div className="flex flex-col min-h-screen">
-            <Navbar />
-            <div className="flex-1">{children}</div>
-            <Footer />
-          </div>
-        </AuthProvider>
+        <I18nProvider initialLocale={locale}>
+          <DashboardThemeProvider>
+            <AuthProvider>
+              <FiatRatesProvider>
+                <NotificationProvider>
+                  <div className="flex flex-col min-h-screen">
+                    <Navbar />
+                    <div className="flex-1">{children}</div>
+                    <Footer />
+                  </div>
+                  <ToastNotificationCenter />
+                </NotificationProvider>
+              </FiatRatesProvider>
+            </AuthProvider>
+          </DashboardThemeProvider>
+        </I18nProvider>
       </body>
     </html>
   );

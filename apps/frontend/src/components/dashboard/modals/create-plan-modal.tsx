@@ -11,7 +11,11 @@ interface CreatePlanModalProps {
 }
 
 export function CreatePlanModal({ isOpen, onClose, onCreatePlan }: CreatePlanModalProps) {
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [currency, setCurrency] = useState<"USDC" | "EURC">("USDC");
+  const [billingModel, setBillingModel] = useState<"fixed" | "tiered" | "metered">("fixed");
+  const [trialDays, setTrialDays] = useState("0");
+  const [graceDays, setGraceDays] = useState("0");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("29");
   const [intervalDays, setIntervalDays] = useState("30");
@@ -23,14 +27,14 @@ export function CreatePlanModal({ isOpen, onClose, onCreatePlan }: CreatePlanMod
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !amount) return;
+    if (!name.trim() || !Number.isFinite(Number(amount)) || Number(amount) <= 0.1 || ![7,30,90,365].includes(Number(intervalDays))) return;
 
-    const newPlanId = `plan_${name.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 12)}_${Math.random().toString(36).substring(2, 6)}`;
+    const newPlanId = `plan_${name.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 12)}_${crypto.randomUUID().slice(0, 8)}`;
     const newPlan: SubscriptionPlan = {
       id: newPlanId,
       name: name.trim(),
       amount: parseFloat(amount) || 29,
-      currency: "USDC",
+      currency,
       intervalDays: parseInt(intervalDays, 10) || 30,
       network: "stellar-testnet",
       activeSubscribers: 0,
@@ -40,11 +44,15 @@ export function CreatePlanModal({ isOpen, onClose, onCreatePlan }: CreatePlanMod
 
     onCreatePlan(newPlan);
     setCreatedPlan(newPlan);
-    setStep(2);
+    setStep(5);
   };
 
   const resetAndClose = () => {
     setStep(1);
+    setCurrency("USDC");
+    setBillingModel("fixed");
+    setTrialDays("0");
+    setGraceDays("0");
     setName("");
     setAmount("29");
     setIntervalDays("30");
@@ -86,7 +94,7 @@ export default function CheckoutButton() {
             </div>
             <div>
               <h3 className="text-base font-bold text-black tracking-tight">
-                {step === 1 ? "Create Subscription Plan" : "Plan Created Successfully"}
+                {step === 5 ? "Plan Created Successfully" : "Create Subscription Plan"}
               </h3>
               <p className="text-xs text-neutral-500">
                 {step === 1
@@ -189,18 +197,24 @@ export default function CheckoutButton() {
                 Cancel
               </button>
               <button
-                type="submit"
+                type="button"
+                disabled={!name.trim() || !(Number(amount) > 0.1)}
+                onClick={() => setStep(2)}
                 className="button button-primary text-xs h-9 px-4 flex items-center gap-1.5"
               >
-                <span>Create Plan &amp; Get Code</span>
+                <span>Next: Billing Model</span>
                 <ArrowRight size={13} />
               </button>
             </div>
           </form>
         )}
 
-        {/* Step 2: Code Snippet Drawer */}
-        {step === 2 && createdPlan && (
+        {step >= 1 && step <= 4 && <div className="px-6 pb-2 text-xs text-neutral-500">Step {step} of 4 · {["Basics", "Billing model", "Trial and grace", "Review"][step - 1]}</div>}
+        {step === 2 && <div className="p-6 space-y-4"><h4 className="font-semibold text-sm">Billing model</h4><label className="block text-xs">Currency <select className="block w-full border rounded p-2 mt-1" value={currency} onChange={e => setCurrency(e.target.value as "USDC" | "EURC")}><option>USDC</option><option>EURC</option></select></label><label className="block text-xs">Pricing <select className="block w-full border rounded p-2 mt-1" value={billingModel} onChange={e => setBillingModel(e.target.value as typeof billingModel)}><option value="fixed">Fixed recurring</option><option value="tiered">Tiered volume (preview only)</option><option value="metered">Base fee + metered usage (preview only)</option></select></label>{billingModel !== "fixed" && <p role="status" className="text-xs text-amber-700">The current plan API supports fixed recurring amounts only. Advanced billing cannot be deployed until the backend supports it.</p>}<div className="flex justify-between"><button onClick={() => setStep(1)} className="button button-secondary px-4 py-2 text-xs">Back</button><button onClick={() => setStep(3)} className="button button-primary px-4 py-2 text-xs">Next</button></div></div>}
+        {step === 3 && <div className="p-6 space-y-4"><h4 className="font-semibold text-sm">Trial &amp; grace periods</h4>{[["Trial days",trialDays,setTrialDays],["Grace period days",graceDays,setGraceDays]] .map(([label,value,setter]) => <label key={label as string} className="block text-xs">{label as string}<input type="number" min="0" max="365" value={value as string} onChange={e => (setter as (value:string)=>void)(e.target.value)} className="block w-full border rounded p-2 mt-1" /></label>)}<div className="flex justify-between"><button onClick={() => setStep(2)} className="button button-secondary px-4 py-2 text-xs">Back</button><button disabled={[trialDays,graceDays].some(v => !/^\d+$/.test(v) || Number(v) > 365)} onClick={() => setStep(4)} className="button button-primary px-4 py-2 text-xs">Review</button></div></div>}
+        {step === 4 && <div className="p-6 space-y-4"><h4 className="font-semibold text-sm">Checkout preview</h4><div className="rounded-xl border p-4 space-y-2"><p className="font-bold">{name}</p><p className="text-xs">{description}</p><p className="text-xl font-bold">{amount} {currency} / {intervalDays} days</p><p className="text-xs text-neutral-500">{billingModel} · {trialDays} trial days · {graceDays} grace days</p></div><p className="text-xs text-amber-700">Only fixed recurring pricing is supported by the current backend. Trial and grace settings are preview-only.</p><div className="flex justify-between"><button onClick={() => setStep(3)} className="button button-secondary px-4 py-2 text-xs">Back</button><button disabled={billingModel !== "fixed" || currency !== "USDC" || Number(trialDays) !== 0 || Number(graceDays) !== 0} onClick={() => handleCreate({preventDefault: () => {}} as React.FormEvent)} className="button button-primary px-4 py-2 text-xs">Create supported plan</button></div></div>}
+        {/* Step 5: Code Snippet Drawer */}
+        {step === 5 && createdPlan && (
           <div className="p-6 space-y-5">
             <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-center justify-between">
               <div>

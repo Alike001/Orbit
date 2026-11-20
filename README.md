@@ -42,9 +42,11 @@ Key rules:
 - **Approved**: the subscriber grants the Orbit contract a SAC allowance. This is the only step that lets tokens move. It is bounded by an amount and a `live_until_ledger`.
 - **Active**: `create_vault` records the terms (`token`, `amount_per_interval`, `interval_seconds`) under the `(user, merchant)` key. No tokens move.
 - **Active -> Active (pull)**: only the merchant can call `pull_funds`. The first pull is allowed right away. Later pulls need `ledger.timestamp() >= last_pull_timestamp + interval_seconds`.
-- **Exhausted / Revoked**: the SAC rejects `transfer_from` once the allowance runs out, expires, or is set to 0. Orbit has no separate revoke entrypoint. The token allowance is the kill switch.
+- **Exhausted / Revoked**: the SAC rejects `transfer_from` once the allowance runs out, expires, or is set to 0. The subscriber can also call `cancel_vault` to delete the vault itself, after which `pull_funds` fails with `Vault does not exist`.
 
 See [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) for the full system design.
+See [Docs/MERCHANT_OPERATIONS.md](Docs/MERCHANT_OPERATIONS.md) for event indexing,
+GraphQL analytics, payroll review, and past-due payment resolution.
 
 ---
 
@@ -52,9 +54,21 @@ See [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) for the full system design.
 
 | Function | Auth | Description |
 |---|---|---|
-| `create_vault(user, merchant, token, amount_per_interval, interval_seconds)` | user | Validates inputs and writes `VaultData` for `(user, merchant)`. Rejects `amount_per_interval <= 0` and `interval_seconds == 0`. Sets `last_pull_timestamp = 0`. Moves no funds. |
-| `pull_funds(user, merchant)` | merchant | Verifies the vault exists and that the billing interval has elapsed. Calls `transfer_from(orbit, user, merchant, amount_per_interval)`, then saves `last_pull_timestamp = now`. |
-| `batch_disburse(sender, token, splits)` | sender | Calls `transfer_from(orbit, sender, split.recipient, split.amount)` for each split, all in one invocation. |
+| `create_vault(user, merchant, token, amount_per_interval, interval_seconds)` | user | Validates inputs and writes `VaultData` for `(user, merchant)`. Rejects `amount_per_interval <= 0` and `interval_seconds == 0`. Sets `last_pull_timestamp = 0`. Moves no funds. Emits `vault_created`. |
+| `cancel_vault(user, merchant)` | user | Removes the vault for `(user, merchant)`. Fails with `Vault does not exist` if there is none. Does not change the token allowance. Emits `vault_cancelled`. |
+| `pull_funds(user, merchant)` | merchant | Verifies the vault exists and that the billing interval has elapsed. Calls `transfer_from(orbit, user, merchant, amount_per_interval)`, then saves `last_pull_timestamp = now`. Emits `funds_pulled`. |
+| `batch_disburse(sender, token, splits)` | sender | Calls `transfer_from(orbit, sender, split.recipient, split.amount)` for each split, all in one invocation. Emits `batch_disbursed`. |
+
+### Contract Events
+
+The contract emits structured events for all successful state changes, allowing off-chain indexers, dashboards, and webhooks to observe protocol activity without ambiguity:
+
+| Event | Topics | Data | Trigger |
+|---|---|---|---|
+| `vault_created` | `("vault_created", user: Address, merchant: Address)` | `(token: Address, amount_per_interval: i128, interval_seconds: u64)` | Emitted when a subscriber registers or updates a vault in `create_vault`. |
+| `vault_cancelled` | `("vault_cancelled", user: Address, merchant: Address)` | `()` | Emitted when a subscriber closes a vault in `cancel_vault`. |
+| `funds_pulled` | `("funds_pulled", user: Address, merchant: Address)` | `(amount_per_interval: i128, timestamp: u64)` | Emitted when a merchant successfully pulls a cycle's funds in `pull_funds`. |
+| `batch_disbursed` | `("batch_disbursed", sender: Address)` | `(token: Address, recipient_count: u32, total_amount: i128)` | Emitted when payroll transfers complete in `batch_disburse`. |
 
 ### Validation and Errors
 
@@ -168,6 +182,7 @@ stellar contract invoke \
 ### Run the App
 
 ```bash
+cp apps/frontend/.env.example apps/frontend/.env.local # configure NEXT_PUBLIC_ORBIT_API_URL
 npm --prefix apps/frontend install
 npm run dev              # Merchant Control Center on http://localhost:3000
 npm run typecheck
@@ -175,6 +190,8 @@ npm run typecheck
 cp apps/backend/.env.example apps/backend/.env   # fill in Supabase keys
 npm --prefix apps/backend install
 npm run dev:backend      # Merchant API on http://localhost:3001
+# Optional: share rate limits across API instances
+# docker run -p 6379:6379 redis   # then set REDIS_URL=redis://localhost:6379
 
 cd packages/checkout-widget && npm install && npm run dev   # widget on http://localhost:5173
 ```
@@ -294,6 +311,14 @@ The contract is a single `no_std` crate:
 - `contracts/soroban/src/lib.rs`: `#[contract] pub struct OrbitContract;` and its `#[contractimpl]`
 - `contracts/soroban/src/test.rs`: unit tests
 
+| Function | Authorization | Storage behavior | Purpose |
+|---|---|---|---|
+| `create_vault` | Subscriber | Writes | Creates or replaces recurring payment terms for a user and merchant |
+| `get_vault` | None | Read-only | Returns the current `VaultData` for a user and merchant, or `None` if no vault exists |
+| `cancel_vault` | Subscriber | Removes | Deletes the vault for a user and merchant so no further pulls are possible |
+| `pull_funds` | Merchant | Reads and writes | Transfers one billing interval and updates `last_pull_timestamp` |
+| `batch_disburse` | Sender | No contract storage | Atomically distributes token amounts to multiple recipients |
+
 Each state-changing method follows the same pattern:
 
 1. `require_auth()` on the one address that owns the action,
@@ -306,7 +331,7 @@ Each state-changing method follows the same pattern:
 
 | Key | Storage | Value | Written by |
 |---|---|---|---|
-| `VaultKey { user, merchant }` | persistent | `VaultData` | `create_vault`, `pull_funds` |
+| `VaultKey { user, merchant }` | persistent | `VaultData` | `create_vault`, `pull_funds`; removed by `cancel_vault` |
 
 There is one vault per `(user, merchant)` pair. Calling `create_vault` again for the same pair overwrites the terms and resets `last_pull_timestamp` to 0.
 
@@ -368,6 +393,7 @@ The dashboard's Batch Payroll module parses a CSV on the client, checks each lin
 +-------------------------------------------------------------+
 |  apps/backend (Express + Supabase)                          |
 |  plans / subscriptions / subscribers / trigger-pull         |
+|  rate limiter + reputation  ---->  Redis (optional, shared) |
 +------------------------------+------------------------------+
                                |  @stellar/stellar-sdk (RPC)
                                v
@@ -402,9 +428,15 @@ Freighter is detected and connected through the official `@stellar/freighter-api
 | `GET` | `/subscribers?merchant_id=` | Subscriptions across a merchant's plans |
 | `POST` | `/trigger-pull` | Build, simulate (`prepareTransaction`), sign and submit `pull_funds` |
 
-Environment: see `apps/backend/.env.example` (`ORBIT_CONTRACT_ID`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE`, Supabase keys). See [apps/backend/README.md](apps/backend/README.md) for the full API reference, request/response examples, and error responses.
+Environment: see `apps/backend/.env.example` (`ORBIT_CONTRACT_ID`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE`, Supabase keys, optional `REDIS_URL` and `HORIZON_URL`). See [apps/backend/README.md](apps/backend/README.md) for the full API reference, request schemas, curl examples, and error codes.
 
-See [apps/backend/README.md](apps/backend/README.md) for full API reference documentation, request schemas, curl examples, and error codes.
+**Rate limiting.** Every route is limited per client IP, authenticated routes per API key, and `/relay/*` per merchant, using a sliding-window log (default 60 seconds). With `REDIS_URL` set, all API instances share one limit through Redis (a sorted set per client, updated atomically by a Lua script); if Redis is unreachable each instance falls back to in-memory limits and retries Redis later. Base limits are scaled by a reputation score:
+
+- New IPs get 0.5x; IPs that recently authenticated as a merchant get 4x.
+- Repeated `429`s shrink an IP's allowance until it stops for 15 minutes.
+- `live` API keys get 3x. With `HORIZON_URL` set, merchant wallets younger than 7 days get 0.5x and wallets older than 90 days get 1.5x.
+
+Responses carry `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and `RateLimit-Policy` headers; over the limit the API returns `429` with `Retry-After`. Details: [apps/backend/README.md#rate-limiting](apps/backend/README.md#rate-limiting).
 
 ### 7.3 Checkout Widget SDK
 
@@ -474,8 +506,7 @@ The release profile sets `overflow-checks = true`. The one addition (`last_pull_
 - `create_vault` does not validate that `amount_per_interval > 0` or `interval_seconds > 0`. A zero interval turns the vault into "pull whenever", still capped by the allowance.
 - Re-calling `create_vault` resets `last_pull_timestamp` to 0, which enables an immediate pull. Only the subscriber can do this, but clients should warn them.
 - `batch_disburse` does not reject zero or negative amounts. The SAC rejects negative amounts.
-- The contract emits no events. Indexers have to rely on transaction results and SAC transfer events.
-- `POST /trigger-pull` accepts `merchant_secret` in the request body. That is fine for testnet demos only. Production should sign on the client (Freighter) or with a KMS-held key.
+- Merchant secret keys never reach the API. `POST /trigger-pull` returns an unsigned XDR; the merchant wallet signs it and `POST /submit-pull` verifies the registered merchant signature before submission.
 
 > This contract has not been audited. It runs on testnet only.
 
@@ -496,6 +527,8 @@ test result: ok. 1 passed; 0 failed
 ```
 
 End-to-end coverage on the real testnet comes from `scripts/execute_flow.sh`.
+
+The Merchant API has a Vitest suite in `apps/backend/test` (`npm --prefix apps/backend test`). It runs the rate limiter against an in-memory Redis fake, covering cross-instance sync, window sliding, threshold enforcement, Redis fallback and reputation scoring. To also run the Lua scripts against a real Redis, set `REDIS_TEST_URL=redis://127.0.0.1:6379`.
 
 ---
 
@@ -524,9 +557,9 @@ Orbit/
 - [x] Merchant Control Center and hosted checkout
 - [x] Freighter integration
 - [ ] Typed `contracterror` codes instead of string panics
-- [ ] Contract events (`VaultCreated`, `FundsPulled`, `BatchDisbursed`)
+- [x] Contract events (`vault_created`, `vault_cancelled`, `funds_pulled`, `batch_disbursed`)
 - [ ] Input validation on `create_vault` and `batch_disburse`
-- [ ] `cancel_vault` entrypoint and TTL extension for vault entries
+- [x] `cancel_vault` entrypoint and TTL extension for vault entries
 - [ ] Broader test suite (early pull, missing vault, batch rollback)
 - [ ] Keeper service with client-side signing
 - [ ] Security audit and mainnet deployment

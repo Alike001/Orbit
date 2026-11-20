@@ -1,289 +1,329 @@
 "use client";
+import { useEffect, useState, type FormEvent } from "react";
+import { ORBIT_API_URL, merchantRequestHeaders } from "@/lib/api";
 
-import { useState } from "react";
-import { X, Link2, Check, Copy, ArrowRight, Sparkles } from "lucide-react";
-import { PaymentLink } from "../dashboard-types";
-
-interface CreatePaymentLinkModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onCreateLink: (link: PaymentLink) => void;
+interface Plan { id: string; name: string; usdc_amount: number; interval_seconds: number; currency?: string }
+export interface HostedLink {
+  id: string;
+  plan_id: string;
+  title: string;
+  cta_text: string;
+  accent_color: string;
+  redirect_url: string | null;
+  collect_email: boolean;
+  collect_discord: boolean;
+  active: boolean;
+  logo_url?: string | null;
+  headline?: string | null;
+  terms_url?: string | null;
+  plans?: Plan;
 }
+interface Props { isOpen: boolean; onClose: () => void; onCreateLink: (link: HostedLink) => void; }
 
-export function CreatePaymentLinkModal({
-  isOpen,
-  onClose,
-  onCreateLink,
-}: CreatePaymentLinkModalProps) {
-  const [step, setStep] = useState<1 | 2>(1);
+export function CreatePaymentLinkModal({ isOpen, onClose, onCreateLink }: Props) {
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [planId, setPlanId] = useState("");
   const [title, setTitle] = useState("");
-  const [amount, setAmount] = useState("500");
-  const [type, setType] = useState<"recurring" | "one_time">("recurring");
-  const [intervalDays, setIntervalDays] = useState("30");
-  const [description, setDescription] = useState("");
-  const [createdLink, setCreatedLink] = useState<PaymentLink | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [headline, setHeadline] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [termsUrl, setTermsUrl] = useState("");
+  const [cta, setCta] = useState("Pay with USDC");
+  const [accent, setAccent] = useState("#111827");
+  const [redirect, setRedirect] = useState("");
+  const [email, setEmail] = useState(false);
+  const [discord, setDiscord] = useState(false);
+  const [previewTermsChecked, setPreviewTermsChecked] = useState(false);
+  const [previewImgError, setPreviewImgError] = useState(false);
+  const [mode, setMode] = useState<"desktop" | "mobile">("desktop");
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState<HostedLink | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    fetch(`${ORBIT_API_URL}/payment-links/plans`, { headers: merchantRequestHeaders(), signal: controller.signal })
+      .then(async response => { if (!response.ok) throw new Error("Unable to load merchant plans. Connect a valid merchant API key."); return response.json(); })
+      .then((data: { plans: Plan[] }) => { setPlans(data.plans); setPlanId(previous => previous || data.plans[0]?.id || ""); })
+      .catch(reason => { if (reason.name !== "AbortError") setError(reason.message); });
+    return () => controller.abort();
+  }, [isOpen]);
 
   if (!isOpen) return null;
+  const currentPlan = plans.find(p => p.id === planId);
+  const url = created && typeof window !== "undefined" ? `${window.location.origin}/pay/${created.id}` : "";
 
-  const handleCreate = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim() || !amount) return;
-
-    const linkId = `plink_${title.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 10)}_${Math.random().toString(36).substring(2, 6)}`;
-    const newLink: PaymentLink = {
-      id: linkId,
-      title: title.trim(),
-      amount: parseFloat(amount) || 500,
-      currency: "USDC",
-      type,
-      intervalDays: type === "recurring" ? parseInt(intervalDays, 10) || 30 : undefined,
-      url: `https://orbit.network/pay/${linkId}`,
-      clicks: 0,
-      conversions: 0,
-      network: "stellar-testnet",
-      status: "active",
-    };
-
-    onCreateLink(newLink);
-    setCreatedLink(newLink);
-    setStep(2);
+  const validateUrl = (u: string, fieldName: string): boolean => {
+    if (!u.trim()) return true;
+    try {
+      const parsed = new URL(u.trim());
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        throw new Error(`${fieldName} must use http:// or https:// protocol.`);
+      }
+      return true;
+    } catch {
+      setError(`Invalid ${fieldName}. Please enter a valid URL.`);
+      return false;
+    }
   };
 
-  const resetAndClose = () => {
-    setStep(1);
-    setTitle("");
-    setAmount("500");
-    setType("recurring");
-    setIntervalDays("30");
-    setDescription("");
-    setCreatedLink(null);
-    setCopied(false);
-    onClose();
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setError("");
+    if (!currentPlan) { setError("Select a valid existing plan."); return; }
+    if (redirect.trim() && !validateUrl(redirect, "Completion redirect URL")) return;
+    if (logoUrl.trim() && !validateUrl(logoUrl, "Brand logo URL")) return;
+    if (termsUrl.trim() && !validateUrl(termsUrl, "Terms & conditions URL")) return;
+
+    setWorking(true);
+    try {
+      const response = await fetch(`${ORBIT_API_URL}/payment-links`, {
+        method: "POST",
+        headers: merchantRequestHeaders(),
+        body: JSON.stringify({
+          plan_id: planId,
+          title: title.trim(),
+          headline: headline.trim() || null,
+          logo_url: logoUrl.trim() || null,
+          terms_url: termsUrl.trim() || null,
+          cta_text: cta.trim(),
+          accent_color: accent,
+          redirect_url: redirect.trim() || null,
+          collect_email: email,
+          collect_discord: discord,
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to save payment link");
+      const link: HostedLink = {
+        ...result.link,
+        logo_url: logoUrl.trim() || null,
+        headline: headline.trim() || null,
+        terms_url: termsUrl.trim() || null,
+        plans: currentPlan
+      };
+      onCreateLink(link);
+      setCreated(link);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to save link");
+    } finally {
+      setWorking(false);
+    }
   };
 
-  const copyUrl = (url: string) => {
-    navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  const qrImage = (format: "png" | "svg") => `https://api.qrserver.com/v1/create-qr-code/?size=600x600&format=${format}&data=${encodeURIComponent(url)}`;
+  const copy = (text: string) => void navigator.clipboard.writeText(text);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-      <div className="w-full max-w-lg rounded-xl bg-white border border-black/10 shadow-2xl overflow-hidden">
-        {/* Modal Header */}
-        <div className="px-6 py-5 border-b border-black/10 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-black/5 flex items-center justify-center text-black">
-              <Link2 size={16} />
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-black tracking-tight">
-                {step === 1 ? "Create Hosted Payment Link" : "Payment Link Generated"}
-              </h3>
-              <p className="text-xs text-neutral-500">
-                {step === 1
-                  ? "100% no-code checkout URL for B2B retainers and services."
-                  : "Share this URL directly with your client or community."}
-              </p>
-            </div>
+    <div role="presentation" className="fixed inset-0 z-50 overflow-y-auto bg-black/70 p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="payment-link-title" className="mx-auto my-6 w-full max-w-5xl rounded-xl bg-white p-6 text-black shadow-xl" onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
+        <div className="mb-5 flex justify-between items-center gap-4 border-b border-black/10 pb-4">
+          <div>
+            <h2 id="payment-link-title" className="text-xl font-bold">
+              {created ? "Share payment link" : "Hosted Checkout Customizer"}
+            </h2>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              Customize brand branding, header graphics, redirect rules, and terms agreement with live preview.
+            </p>
           </div>
-          <button
-            onClick={resetAndClose}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition-colors"
-          >
-            <X size={18} />
+          <button type="button" onClick={onClose} aria-label="Close payment link wizard" className="rounded-lg border px-3 py-1.5 text-xs hover:bg-neutral-50">
+            Close
           </button>
         </div>
 
-        {step === 1 && (
-          <form onSubmit={handleCreate} className="p-6 space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-black uppercase tracking-wider mb-1.5">
-                Service / Retainer Title
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="e.g. Monthly Advisory Retainer, Studio Design Pass"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-lg border border-black/10 px-3.5 py-2.5 text-xs text-black focus:outline-hidden focus:ring-1 focus:ring-black"
-                autoFocus
-              />
+        {created ? (
+          <div className="space-y-4">
+            <p className="text-sm">Your custom branded checkout link is saved on Orbit and ready to share.</p>
+            <input readOnly value={url} aria-label="Hosted checkout URL" className="w-full rounded border p-3 font-mono text-xs" />
+            <div className="flex flex-wrap gap-2">
+              <button className="rounded bg-black px-4 py-2 text-white text-xs font-semibold" onClick={() => copy(url)}>Copy URL</button>
+              <button className="rounded border px-4 py-2 text-xs font-medium" onClick={() => copy(`<a href="${url}">Pay with Orbit</a>`)}>Copy embed snippet</button>
+              <a className="rounded border px-4 py-2 text-xs font-medium" href={qrImage("svg")} download="orbit-checkout.svg" target="_blank" rel="noreferrer">Download SVG QR</a>
+              <a className="rounded border px-4 py-2 text-xs font-medium" href={qrImage("png")} download="orbit-checkout.png" target="_blank" rel="noreferrer">Download PNG QR</a>
             </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-black uppercase tracking-wider mb-1.5">
-                Billing Model
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={qrImage("png")} width={160} height={160} alt="QR code for hosted checkout" className="rounded-lg border p-1" />
+          </div>
+        ) : (
+          <div className="grid gap-6 lg:grid-cols-12">
+            {/* Left: Customizer Form */}
+            <form onSubmit={submit} className="space-y-3.5 lg:col-span-6">
+              <label className="block text-xs font-semibold text-neutral-700">
+                Linked Plan <span className="text-red-500">*</span>
+                <select required value={planId} onChange={e => setPlanId(e.target.value)} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs">
+                  <option value="">Select plan</option>
+                  {plans.map(p => <option key={p.id} value={p.id}>{p.name} ({(Number(p.usdc_amount) / 1e7).toFixed(2)} USDC)</option>)}
+                </select>
               </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setType("recurring")}
-                  className={`p-3 rounded-lg border text-left transition-all ${
-                    type === "recurring"
-                      ? "border-black bg-neutral-50 ring-1 ring-black/5"
-                      : "border-black/10 hover:bg-neutral-50"
-                  }`}
-                >
-                  <div className="font-bold text-xs text-black">Recurring Retainer</div>
-                  <div className="text-[11px] text-neutral-500 mt-0.5">
-                    Automated pull every 30 days
-                  </div>
-                </button>
 
-                <button
-                  type="button"
-                  onClick={() => setType("one_time")}
-                  className={`p-3 rounded-lg border text-left transition-all ${
-                    type === "one_time"
-                      ? "border-black bg-neutral-50 ring-1 ring-black/5"
-                      : "border-black/10 hover:bg-neutral-50"
-                  }`}
-                >
-                  <div className="font-bold text-xs text-black">One-Time Payment</div>
-                  <div className="text-[11px] text-neutral-500 mt-0.5">
-                    Fixed digital dollar invoice
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Checkout Title <span className="text-red-500">*</span>
+                  <input required maxLength={140} placeholder="e.g. Pro Monthly Membership" value={title} onChange={e => setTitle(e.target.value)} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs" />
+                </label>
+
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Custom Header Headline
+                  <input maxLength={140} placeholder="e.g. Unlock unlimited access" value={headline} onChange={e => setHeadline(e.target.value)} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs" />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Brand Logo URL
+                  <input type="url" placeholder="https://example.com/logo.png" value={logoUrl} onChange={e => { setLogoUrl(e.target.value); setPreviewImgError(false); }} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs" />
+                </label>
+
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Brand Color Accent
+                  <div className="flex items-center gap-2 mt-1">
+                    <input type="color" value={accent} onChange={e => setAccent(e.target.value)} className="w-8 h-8 rounded border border-black/10 cursor-pointer" />
+                    <input type="text" value={accent} onChange={e => setAccent(e.target.value)} className="w-full rounded-lg border border-black/10 p-2 text-xs font-mono uppercase" />
                   </div>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Terms & Conditions URL
+                  <input type="url" placeholder="https://example.com/terms" value={termsUrl} onChange={e => setTermsUrl(e.target.value)} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs" />
+                </label>
+
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Button Text (CTA)
+                  <input required maxLength={80} value={cta} onChange={e => setCta(e.target.value)} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs" />
+                </label>
+              </div>
+
+              <label className="block text-xs font-semibold text-neutral-700">
+                Post-Checkout Redirect URL (HTTPS)
+                <input type="url" pattern="https://.*" placeholder="https://example.com/checkout/success" value={redirect} onChange={e => setRedirect(e.target.value)} className="mt-1 block w-full rounded-lg border border-black/10 p-2 text-xs" />
+                <span className="text-[10px] text-neutral-500 mt-0.5 block">
+                  Customers are redirected here automatically upon settlement with ?vault_id=…&amp;tx_hash=…
+                </span>
+              </label>
+
+              <div className="flex flex-wrap gap-4 pt-1">
+                <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+                  <input type="checkbox" checked={email} onChange={e => setEmail(e.target.checked)} className="rounded border-black/20 text-black focus:ring-black" />
+                  Collect customer email
+                </label>
+                <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+                  <input type="checkbox" checked={discord} onChange={e => setDiscord(e.target.checked)} className="rounded border-black/20 text-black focus:ring-black" />
+                  Collect Discord handle
+                </label>
+              </div>
+
+              <div className="pt-2">
+                <button type="submit" disabled={working || !planId} className="w-full rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-neutral-800 disabled:opacity-50">
+                  {working ? "Saving Link Customizations…" : "Create Branded Checkout Link"}
                 </button>
               </div>
-            </div>
+            </form>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Right: Side-by-Side Dynamic Mock Preview */}
+            <section aria-label="Live checkout preview" className="rounded-xl bg-neutral-100/80 border border-black/10 p-4 lg:col-span-6 flex flex-col justify-between">
               <div>
-                <label className="block text-xs font-semibold text-black uppercase tracking-wider mb-1.5">
-                  Amount (USDC)
-                </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    min="1"
-                    step="any"
-                    required
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full rounded-lg border border-black/10 pl-3.5 pr-16 py-2.5 text-xs font-mono text-black focus:outline-hidden focus:ring-1 focus:ring-black"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono font-semibold text-neutral-400">
-                    USDC
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-neutral-500">
+                    Live Dynamic Preview
                   </span>
+                  <div className="flex gap-1 bg-white p-0.5 rounded-lg border border-black/10 text-xs">
+                    <button type="button" onClick={() => setMode("desktop")} className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${mode === "desktop" ? "bg-black text-white" : "text-neutral-600 hover:text-black"}`}>
+                      Desktop
+                    </button>
+                    <button type="button" onClick={() => setMode("mobile")} className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${mode === "mobile" ? "bg-black text-white" : "text-neutral-600 hover:text-black"}`}>
+                      Mobile
+                    </button>
+                  </div>
+                </div>
+
+                <div className={`mx-auto rounded-xl bg-white border border-black/10 p-5 shadow-sm transition-all duration-200 ${mode === "mobile" ? "max-w-[300px]" : "w-full"}`}>
+                  {/* Brand Header */}
+                  <div className="flex items-center gap-3 pb-3 border-b border-black/5">
+                    {logoUrl && !previewImgError ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={logoUrl}
+                        alt="Brand Logo Preview"
+                        className="w-8 h-8 rounded-full object-cover border border-black/10"
+                        onError={() => setPreviewImgError(true)}
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ backgroundColor: accent }}>
+                        {title.slice(0, 1).toUpperCase() || "O"}
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-[10px] uppercase font-bold tracking-wider text-neutral-400">Merchant Checkout</div>
+                      <div className="text-xs font-bold text-black truncate max-w-[200px]">
+                        {headline || "Verified Orbit Merchant"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Body */}
+                  <div className="mt-4 space-y-3">
+                    <h3 className="text-base font-bold text-black leading-snug">
+                      {title || "Subscription Checkout"}
+                    </h3>
+                    <div className="flex justify-between items-baseline border-y border-neutral-100 py-2.5">
+                      <span className="text-xs text-neutral-500">{currentPlan?.name || "Selected Plan"}</span>
+                      <strong className="text-base font-mono font-bold text-black">
+                        ${currentPlan ? (Number(currentPlan.usdc_amount) / 1e7).toFixed(2) : "0.00"} USDC
+                      </strong>
+                    </div>
+
+                    {email && (
+                      <input disabled placeholder="customer@domain.com" className="w-full rounded-md border border-neutral-200 p-2 text-[11px] bg-neutral-50" />
+                    )}
+                    {discord && (
+                      <input disabled placeholder="username#0000" className="w-full rounded-md border border-neutral-200 p-2 text-[11px] bg-neutral-50" />
+                    )}
+
+                    {termsUrl && (
+                      <label className="flex items-start gap-2 text-[11px] text-neutral-600 cursor-pointer pt-1">
+                        <input
+                          type="checkbox"
+                          checked={previewTermsChecked}
+                          onChange={e => setPreviewTermsChecked(e.target.checked)}
+                          className="mt-0.5 rounded border-black/20 text-black focus:ring-black"
+                        />
+                        <span>
+                          I agree to the{" "}
+                          <span className="underline font-medium text-black">
+                            Terms &amp; Conditions
+                          </span>
+                        </span>
+                      </label>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={Boolean(termsUrl && !previewTermsChecked)}
+                      style={{ backgroundColor: accent }}
+                      className="w-full rounded-lg p-2.5 text-xs font-bold text-white shadow-xs disabled:opacity-40 transition-opacity"
+                    >
+                      {cta || "Pay with USDC"}
+                    </button>
+                    {termsUrl && !previewTermsChecked && (
+                      <p className="text-[10px] text-amber-700 text-center">
+                        Must accept terms before authorizing wallet
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {type === "recurring" && (
-                <div>
-                  <label className="block text-xs font-semibold text-black uppercase tracking-wider mb-1.5">
-                    Frequency
-                  </label>
-                  <select
-                    value={intervalDays}
-                    onChange={(e) => setIntervalDays(e.target.value)}
-                    className="w-full rounded-lg border border-black/10 px-3.5 py-2.5 text-xs text-black bg-white focus:outline-hidden focus:ring-1 focus:ring-black"
-                  >
-                    <option value="7">Every 7 Days (Weekly)</option>
-                    <option value="30">Every 30 Days (Monthly)</option>
-                    <option value="90">Every 90 Days (Quarterly)</option>
-                  </select>
+              {redirect && (
+                <div className="mt-3 p-2.5 rounded-lg bg-white border border-black/5 text-[11px] text-neutral-600">
+                  <span className="font-semibold text-black">Post-Settlement Redirect:</span>
+                  <div className="font-mono text-[10px] truncate mt-0.5 text-neutral-500">{redirect}</div>
                 </div>
               )}
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-black uppercase tracking-wider mb-1.5">
-                Note to Client (Optional)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Includes weekly deliverables and async Slack support"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full rounded-lg border border-black/10 px-3.5 py-2.5 text-xs text-black focus:outline-hidden focus:ring-1 focus:ring-black"
-              />
-            </div>
-
-            <div className="p-3.5 rounded-lg bg-neutral-50 border border-black/5 text-xs text-neutral-600 flex items-start gap-2.5">
-              <Sparkles size={16} className="text-black shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold text-black">No developer required:</span>{" "}
-                Clients open this URL in any browser, connect Freighter, and approve the payment in seconds.
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-black/10">
-              <button
-                type="button"
-                onClick={resetAndClose}
-                className="button button-secondary text-xs h-9 px-4"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="button button-primary text-xs h-9 px-4 flex items-center gap-1.5"
-              >
-                <span>Generate Link</span>
-                <ArrowRight size={13} />
-              </button>
-            </div>
-          </form>
-        )}
-
-        {step === 2 && createdLink && (
-          <div className="p-6 space-y-5">
-            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 flex items-center justify-between">
-              <div>
-                <div className="font-bold text-sm text-black">{createdLink.title}</div>
-                <div className="font-mono text-xs text-emerald-800 mt-0.5">
-                  {createdLink.amount} USDC {createdLink.type === "recurring" ? `/ Every ${createdLink.intervalDays} Days` : "(One-Time)"}
-                </div>
-              </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-600 text-white font-bold">
-                LIVE URL
-              </span>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1.5">
-                Shareable Checkout URL
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={createdLink.url}
-                  className="w-full rounded-lg border border-black/10 px-3.5 py-2.5 text-xs font-mono bg-neutral-50 text-black"
-                />
-                <button
-                  onClick={() => copyUrl(createdLink.url)}
-                  className="button button-primary text-xs h-10 px-4 shrink-0 flex items-center gap-1.5"
-                >
-                  {copied ? (
-                    <>
-                      <Check size={13} className="text-emerald-400" />
-                      <span>Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={13} />
-                      <span>Copy</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-black/10">
-              <button
-                type="button"
-                onClick={resetAndClose}
-                className="button button-primary text-xs h-9 px-5"
-              >
-                Done
-              </button>
-            </div>
+            </section>
           </div>
         )}
+        {error && <p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-xs text-red-800">{error}</p>}
       </div>
     </div>
   );

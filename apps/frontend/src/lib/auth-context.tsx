@@ -1,9 +1,13 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { setMerchantApiKey } from "@/lib/api";
+import { getAddress, getNetwork, isConnected } from "@stellar/freighter-api";
+import { clearWalletProvider, persistWalletProvider, type WalletProvider } from "@/lib/wallet-adapters";
 
 export interface LinkedVaults {
   stellar?: string;
+  contract_id?: string;
 }
 
 export interface MerchantUser {
@@ -11,6 +15,8 @@ export interface MerchantUser {
   email: string;
   businessName: string;
   walletAddress?: string;
+  walletProvider?: WalletProvider;
+  customContractId?: string;
   linkedVaults?: LinkedVaults;
   createdAt: string;
 }
@@ -18,6 +24,8 @@ export interface MerchantUser {
 interface AuthContextType {
   user: MerchantUser | null;
   isLoading: boolean;
+  walletNetworkWarning: string | null;
+  disconnectWallet: () => void;
   signUp: (data: {
     email: string;
     password?: string;
@@ -29,9 +37,10 @@ interface AuthContextType {
     password?: string,
     businessName?: string
   ) => Promise<{ success: boolean; error?: string }>;
-  signInWithWallet: (walletAddress: string) => Promise<{ success: boolean; error?: string }>;
-  updateWallet: (walletAddress: string) => void;
+  signInWithWallet: (walletAddress: string, provider?: WalletProvider) => Promise<{ success: boolean; error?: string }>;
+  updateWallet: (walletAddress: string, provider?: WalletProvider) => void;
   updateVault: (chain: "stellar", address: string) => void;
+  updateContractId: (contractId: string) => void;
   updateBusinessName: (businessName: string) => void;
   signOut: () => void;
 }
@@ -43,6 +52,8 @@ const STORAGE_KEY = "orbit_merchant_session";
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<MerchantUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [walletNetworkWarning, setWalletNetworkWarning] = useState<string | null>(null);
+  useEffect(() => { setMerchantApiKey(""); }, [user?.id]);
 
   // Restore session on mount
   useEffect(() => {
@@ -57,6 +68,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     }
   }, []);
+
+  // Passive checks never request wallet permissions or trigger a Freighter popup.
+  useEffect(() => {
+    if (!user?.walletAddress || user.walletProvider !== "freighter") {
+      setWalletNetworkWarning(null);
+      return;
+    }
+    let active = true;
+    const verify = async () => {
+      try {
+        const connected = await isConnected();
+        if (!active) return;
+        if (!connected.isConnected || connected.error) return; // extension temporarily unavailable
+        const address = await getAddress();
+        if (!active) return;
+        if (!address.address) {
+          if (!address.error) return;
+          // An inaccessible/locked wallet is not an authenticated session.
+          setUser(current => {
+            if (!current || current.walletProvider !== "freighter") return current;
+            const next = { ...current, walletAddress: undefined, walletProvider: undefined };
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+            return next;
+          });
+          return;
+        }
+        setUser(current => {
+          if (!current || current.walletProvider !== "freighter" || current.walletAddress === address.address) return current;
+          const next = { ...current, walletAddress: address.address, linkedVaults: { ...current.linkedVaults, stellar: address.address } };
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+          return next;
+        });
+        const network = await getNetwork();
+        if (!active) return;
+        const expected = process.env.NEXT_PUBLIC_STELLAR_NETWORK || "TESTNET";
+        const actual = network.network || "";
+        setWalletNetworkWarning(actual && actual.toUpperCase() !== expected.toUpperCase()
+          ? `Freighter is connected to ${actual}, but Orbit expects ${expected}. Switch networks before making payments.`
+          : null);
+      } catch { /* Transient extension errors must not erase the merchant. */ }
+    };
+    void verify();
+    const interval = setInterval(() => { void verify(); }, 3000);
+    const visibility = () => { if (document.visibilityState === "visible") void verify(); };
+    document.addEventListener("visibilitychange", visibility);
+    return () => { active = false; clearInterval(interval); document.removeEventListener("visibilitychange", visibility); };
+  }, [user?.id, user?.walletAddress, user?.walletProvider]);
 
   const saveUserSession = (userData: MerchantUser) => {
     setUser(userData);
@@ -149,7 +207,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signInWithWallet = async (
-    walletAddress: string
+    walletAddress: string,
+    provider: WalletProvider = "freighter"
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       if (!walletAddress || walletAddress.length < 10) {
@@ -162,10 +221,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: `merchant_${shortAddr.toLowerCase()}@orbit.network`,
         businessName: `Merchant (${shortAddr})`,
         walletAddress: walletAddress.trim(),
+        walletProvider: provider,
         createdAt: new Date().toISOString(),
       };
 
       saveUserSession(userData);
+      persistWalletProvider(provider);
       return { success: true };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Wallet sign-in failed";
@@ -173,18 +234,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const updateWallet = (walletAddress: string) => {
+  const updateWallet = (walletAddress: string, provider: WalletProvider = "freighter") => {
     if (!user) return;
     const trimmed = walletAddress.trim();
     const updated = {
       ...user,
       walletAddress: trimmed,
+      walletProvider: provider,
       linkedVaults: {
         ...user.linkedVaults,
         stellar: trimmed,
       },
     };
     saveUserSession(updated);
+    persistWalletProvider(provider);
   };
 
   const updateVault = (chain: "stellar", address: string) => {
@@ -201,6 +264,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveUserSession(updated);
   };
 
+  const updateContractId = (contractId: string) => {
+    if (!user) return;
+    const trimmed = contractId.trim();
+    const updated = {
+      ...user,
+      customContractId: trimmed,
+      linkedVaults: {
+        ...user.linkedVaults,
+        contract_id: trimmed,
+      },
+    };
+    saveUserSession(updated);
+  };
+
   const updateBusinessName = (businessName: string) => {
     if (!user) return;
     const trimmed = businessName.trim();
@@ -212,8 +289,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveUserSession(updated);
   };
 
+  const disconnectWallet = () => {
+    if (!user) return;
+    saveUserSession({ ...user, walletAddress: undefined, walletProvider: undefined, linkedVaults: { ...user.linkedVaults, stellar: undefined } });
+    setWalletNetworkWarning(null);
+    clearWalletProvider();
+  };
+
   const signOut = () => {
     setUser(null);
+    clearWalletProvider();
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (err) {
@@ -226,11 +311,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         isLoading,
+        walletNetworkWarning,
+        disconnectWallet,
         signUp,
         signIn,
         signInWithWallet,
         updateWallet,
         updateVault,
+        updateContractId,
         updateBusinessName,
         signOut,
       }}
