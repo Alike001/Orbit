@@ -146,6 +146,7 @@ export interface PaymentLink {
 }
 
 export interface ApiKeyRecord {
+  scopes?: string[];
   id: string;
   name: string;
   keyPrefix: string;
