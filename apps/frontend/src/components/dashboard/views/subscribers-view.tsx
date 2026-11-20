@@ -2,7 +2,7 @@
 
 import { PriceDisplay } from "@/components/ui/price-display";
 import { useTranslations } from "next-intl";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Users,
   Search,
@@ -20,6 +20,13 @@ import {
   RefreshCw,
   ChevronRight,
   SlidersHorizontal,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  Filter,
+  Calendar,
+  PauseCircle,
+  UserX,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { SubscriberRecord } from "../dashboard-types";
@@ -96,6 +103,30 @@ export const INITIAL_SUBSCRIBERS: SubscriberRecord[] = [
     dunningStatus: "pending",
     retryCount: 1,
   },
+  {
+    id: "sub_kenji_6120",
+    walletAddress: "GKEN48V2L9P1T3R7V0D2L7C3F9A1H5J8K2W8Y2K7",
+    planId: "plan_mailkit_pro",
+    planName: "MailKit Pro",
+    amount: 29.0,
+    network: "stellar-testnet",
+    status: "paused",
+    nextPullDate: "Paused by User",
+    totalSettled: 58.0,
+    joinedDate: "Feb 10, 2026",
+  },
+  {
+    id: "sub_sophia_1944",
+    walletAddress: "GSOP29H5M3K8P1T6R9V0D2L7C3F9A1H5J8K2W8Y9",
+    planId: "plan_dao_retainer",
+    planName: "DAO Builder Pass",
+    amount: 100.0,
+    network: "stellar-testnet",
+    status: "churned",
+    nextPullDate: "Cancelled",
+    totalSettled: 200.0,
+    joinedDate: "Jan 15, 2026",
+  },
 ];
 
 export function SubscribersView() {
@@ -116,11 +147,25 @@ export function SubscribersView() {
   });
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterTab, setFilterTab] = useState<"all" | "pending_pull" | "active" | "past_due">("all");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending_pull" | "active" | "paused" | "churned" | "past_due">("all");
+  const [planFilter, setPlanFilter] = useState<string>("all");
+  const [dateRangeFilter, setDateRangeFilter] = useState<"all" | "7d" | "30d" | "90d">("all");
+  const [sortField, setSortField] = useState<"walletAddress" | "planName" | "amount" | "totalSettled" | "nextPullDate">("walletAddress");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [executingPullId, setExecutingPullId] = useState<string | null>(null);
   const [pullSuccessMessage, setPullSuccessMessage] = useState<string | null>(null);
   const [isBatchPulling, setIsBatchPulling] = useState(false);
+
+  // Client-Side Debounced Search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Customer Management Drawer
   const [selectedSubscriber, setSelectedSubscriber] = useState<SubscriberRecord | null>(null);
@@ -262,17 +307,159 @@ export function SubscribersView() {
     }, 1400);
   };
 
-  const filteredSubscribers = subscribers.filter((s) => {
-    const matchesSearch =
-      s.walletAddress.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.planName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.id.toLowerCase().includes(searchQuery.toLowerCase());
+  const toggleSort = (field: "walletAddress" | "planName" | "amount" | "totalSettled" | "nextPullDate") => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  };
 
-    if (filterTab === "all") return matchesSearch;
-    return matchesSearch && s.status === filterTab;
-  });
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleClearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  // Batch Pull Selected Pending Vaults
+  const handleBatchPullSelected = async () => {
+    const selectedDue = subscribers.filter(
+      (s) => selectedIds.has(s.id) && s.status === "pending_pull"
+    );
+    if (selectedDue.length === 0) return;
+
+    setIsBatchPulling(true);
+    setPullSuccessMessage(null);
+    if (!isDemoMode) {
+      try {
+        for (const subscriber of selectedDue) await handleExecutePull(subscriber);
+        setSelectedIds(new Set());
+      } finally {
+        setIsBatchPulling(false);
+      }
+      return;
+    }
+
+    const totalPullAmount = selectedDue.reduce((acc, s) => acc + s.amount, 0);
+
+    setTimeout(() => {
+      setSubscribers((prev) =>
+        prev.map((s) => {
+          if (selectedIds.has(s.id) && s.status === "pending_pull") {
+            return {
+              ...s,
+              status: "active",
+              nextPullDate: "In 30 days",
+              totalSettled: s.totalSettled + s.amount,
+            };
+          }
+          return s;
+        })
+      );
+
+      setIsBatchPulling(false);
+      setSelectedIds(new Set());
+      setPullSuccessMessage(
+        `Batch Pull Succeeded! Settled ${totalPullAmount.toFixed(2)} USDC across ${selectedDue.length} selected vaults in single ledger block (1.2s finality).`
+      );
+
+      setTimeout(() => setPullSuccessMessage(null), 6000);
+    }, 1200);
+  };
+
+  // Available unique plans for faceted filter
+  const availablePlans = useMemo(() => {
+    const plansMap = new Map<string, string>();
+    subscribers.forEach((s) => {
+      if (s.planId && s.planName) plansMap.set(s.planId, s.planName);
+    });
+    return Array.from(plansMap.entries()).map(([id, name]) => ({ id, name }));
+  }, [subscribers]);
+
+  const filteredSubscribers = useMemo(() => {
+    const q = debouncedSearch.toLowerCase().trim();
+    const result = subscribers.filter((s) => {
+      // 1. Debounced Search Filter
+      const matchesSearch =
+        !q ||
+        s.walletAddress.toLowerCase().includes(q) ||
+        s.planName.toLowerCase().includes(q) ||
+        s.id.toLowerCase().includes(q);
+
+      if (!matchesSearch) return false;
+
+      // 2. Status Filter
+      if (statusFilter !== "all" && s.status !== statusFilter) {
+        return false;
+      }
+
+      // 3. Plan ID Filter
+      if (planFilter !== "all" && s.planId !== planFilter) {
+        return false;
+      }
+
+      // 4. Date Range Filter
+      if (dateRangeFilter !== "all") {
+        const joined = new Date(s.joinedDate).getTime();
+        if (!isNaN(joined)) {
+          const now = Date.now();
+          const daysAgo = (now - joined) / (1000 * 60 * 60 * 24);
+          if (dateRangeFilter === "7d" && daysAgo > 7) return false;
+          if (dateRangeFilter === "30d" && daysAgo > 30) return false;
+          if (dateRangeFilter === "90d" && daysAgo > 90) return false;
+        }
+      }
+
+      return true;
+    });
+
+    // Multi-Column Sorting
+    result.sort((a, b) => {
+      let valA: string | number = "";
+      let valB: string | number = "";
+      if (sortField === "walletAddress") {
+        valA = a.walletAddress.toLowerCase();
+        valB = b.walletAddress.toLowerCase();
+      } else if (sortField === "planName") {
+        valA = a.planName.toLowerCase();
+        valB = b.planName.toLowerCase();
+      } else if (sortField === "amount") {
+        valA = a.amount;
+        valB = b.amount;
+      } else if (sortField === "totalSettled") {
+        valA = a.totalSettled;
+        valB = b.totalSettled;
+      } else if (sortField === "nextPullDate") {
+        valA = a.nextPullDate.toLowerCase();
+        valB = b.nextPullDate.toLowerCase();
+      }
+
+      if (valA < valB) return sortDirection === "asc" ? -1 : 1;
+      if (valA > valB) return sortDirection === "asc" ? 1 : -1;
+      return 0;
+    });
+
+    return result;
+  }, [subscribers, debouncedSearch, statusFilter, planFilter, dateRangeFilter, sortField, sortDirection]);
+
+  const selectedPendingVaults = subscribers.filter(
+    (s) => selectedIds.has(s.id) && s.status === "pending_pull"
+  );
+  const selectedPendingCount = selectedPendingVaults.length;
+  const selectedPendingAmount = selectedPendingVaults.reduce((acc, s) => acc + s.amount, 0);
 
   const dueCount = subscribers.filter((s) => s.status === "pending_pull").length;
+  const activeCount = subscribers.filter((s) => s.status === "active").length;
+  const pausedCount = subscribers.filter((s) => s.status === "paused").length;
+  const churnedCount = subscribers.filter((s) => s.status === "churned" || s.status === "cancelled").length;
   const pastDueCount = subscribers.filter((s) => s.status === "past_due").length;
   const totalSettledAll = subscribers.reduce((acc, s) => acc + s.totalSettled, 0);
 
@@ -455,65 +642,140 @@ export function SubscribersView() {
         </div>
       </div>
 
-      {/* 3. Search & Status Filter */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="relative flex-1">
-          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-          <input
-            type="text"
-            placeholder="Search by customer address, plan name, or subscription ID..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-lg border border-black/10 pl-9 pr-4 py-2 text-xs text-black bg-white focus:outline-hidden focus:ring-1 focus:ring-black focus:border-black"
-          />
+      {/* 3. Search & Faceted Filters */}
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+            <input
+              type="text"
+              placeholder="Search by customer address, plan name, or subscription ID..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full rounded-lg border border-black/10 pl-9 pr-4 py-2 text-xs text-black bg-white focus:outline-hidden focus:ring-1 focus:ring-black focus:border-black"
+            />
+          </div>
+
+          <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg shrink-0 overflow-x-auto max-w-full">
+            <button
+              onClick={() => setStatusFilter("all")}
+              className={`text-xs px-2.5 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                statusFilter === "all"
+                  ? "bg-white text-black font-bold shadow-2xs"
+                  : "text-neutral-500 hover:text-black"
+              }`}
+            >
+              All ({subscribers.length})
+            </button>
+            <button
+              onClick={() => setStatusFilter("pending_pull")}
+              className={`text-xs px-2.5 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                statusFilter === "pending_pull"
+                  ? "bg-white text-amber-700 font-bold shadow-2xs"
+                  : "text-neutral-500 hover:text-black"
+              }`}
+            >
+              Due ({dueCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter("active")}
+              className={`text-xs px-2.5 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                statusFilter === "active"
+                  ? "bg-white text-emerald-700 font-bold shadow-2xs"
+                  : "text-neutral-500 hover:text-black"
+              }`}
+            >
+              Active ({activeCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter("paused")}
+              className={`text-xs px-2.5 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                statusFilter === "paused"
+                  ? "bg-white text-blue-700 font-bold shadow-2xs"
+                  : "text-neutral-500 hover:text-black"
+              }`}
+            >
+              Paused ({pausedCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter("churned")}
+              className={`text-xs px-2.5 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                statusFilter === "churned"
+                  ? "bg-white text-neutral-800 font-bold shadow-2xs"
+                  : "text-neutral-500 hover:text-black"
+              }`}
+            >
+              Churned ({churnedCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter("past_due")}
+              className={`text-xs px-2.5 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap ${
+                statusFilter === "past_due"
+                  ? "bg-white text-red-700 font-bold shadow-2xs"
+                  : "text-neutral-500 hover:text-black"
+              }`}
+            >
+              Past Due ({pastDueCount})
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg shrink-0">
-          <button
-            onClick={() => setFilterTab("all")}
-            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
-              filterTab === "all"
-                ? "bg-white text-black font-bold shadow-2xs"
-                : "text-neutral-500 hover:text-black"
-            }`}
-          >
-            All ({subscribers.length})
-          </button>
-          <button
-            onClick={() => setFilterTab("pending_pull")}
-            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
-              filterTab === "pending_pull"
-                ? "bg-white text-amber-700 font-bold shadow-2xs"
-                : "text-neutral-500 hover:text-black"
-            }`}
-          >
-            Due ({dueCount})
-          </button>
-          <button
-            onClick={() => setFilterTab("active")}
-            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
-              filterTab === "active"
-                ? "bg-white text-black font-bold shadow-2xs"
-                : "text-neutral-500 hover:text-black"
-            }`}
-          >
-            Active ({subscribers.filter((s) => s.status === "active").length})
-          </button>
-          <button
-            onClick={() => setFilterTab("past_due")}
-            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
-              filterTab === "past_due"
-                ? "bg-white text-red-700 font-bold shadow-2xs"
-                : "text-neutral-500 hover:text-black"
-            }`}
-          >
-            Past Due ({pastDueCount})
-          </button>
+        {/* Faceted Filter Controls: Plan & Date Range */}
+        <div className="flex flex-wrap items-center gap-2.5 pt-1 text-xs">
+          <div className="flex items-center gap-1.5 bg-white border border-black/10 rounded-lg px-2.5 py-1.5">
+            <Filter size={12} className="text-neutral-400" />
+            <span className="text-[11px] font-medium text-neutral-500">Plan:</span>
+            <select
+              value={planFilter}
+              onChange={(e) => setPlanFilter(e.target.value)}
+              className="bg-transparent text-xs text-black font-medium focus:outline-hidden cursor-pointer"
+            >
+              <option value="all">All Plans ({availablePlans.length})</option>
+              {availablePlans.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-white border border-black/10 rounded-lg px-2.5 py-1.5">
+            <Calendar size={12} className="text-neutral-400" />
+            <span className="text-[11px] font-medium text-neutral-500">Joined Date:</span>
+            <select
+              value={dateRangeFilter}
+              onChange={(e) => setDateRangeFilter(e.target.value as "all" | "7d" | "30d" | "90d")}
+              className="bg-transparent text-xs text-black font-medium focus:outline-hidden cursor-pointer"
+            >
+              <option value="all">All Time</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="30d">Last 30 Days</option>
+              <option value="90d">Last 90 Days</option>
+            </select>
+          </div>
+
+          {(planFilter !== "all" || dateRangeFilter !== "all" || statusFilter !== "all" || searchQuery) && (
+            <button
+              onClick={() => {
+                setPlanFilter("all");
+                setDateRangeFilter("all");
+                setStatusFilter("all");
+                setSearchQuery("");
+              }}
+              className="text-[11px] text-neutral-500 hover:text-black underline underline-offset-2 ml-1"
+            >
+              Reset all filters
+            </button>
+          )}
+
+          <div className="ml-auto text-[11px] text-neutral-500 font-mono">
+            Showing {filteredSubscribers.length} of {subscribers.length} vaults
+          </div>
         </div>
       </div>
 
-      {/* 4. Subscribers Table */}
-      <div className="rounded-xl border border-black/10 bg-white overflow-hidden shadow-xs">
+      {/* 4. Subscribers High-Density Table with Sticky Headers */}
+      <div className="relative rounded-xl border border-black/10 bg-white overflow-hidden shadow-xs">
         {isLoading ? (
           <div className="py-20 flex flex-col items-center justify-center text-center">
             <RotateCw size={24} className="text-black animate-spin mb-3" />
@@ -523,16 +785,130 @@ export function SubscribersView() {
             </p>
           </div>
         ) : filteredSubscribers.length > 0 ? (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-h-[68vh] overflow-y-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-neutral-50/80 border-b border-black/10 text-neutral-500 uppercase tracking-wider font-semibold text-[10px]">
+              <thead className="sticky top-0 z-10 bg-neutral-50/95 backdrop-blur-xs border-b border-black/10 text-neutral-500 uppercase tracking-wider font-semibold text-[10px]">
                 <tr>
-                  <th className="py-3.5 px-5">{t("subscribers.vault")}</th>
-                  <th className="py-3.5 px-4">{t("subscribers.plan")}</th>
-                  <th className="py-3.5 px-4">{t("subscribers.rate")}</th>
-                  <th className="py-3.5 px-4">{t("subscribers.settled")}</th>
-                  <th className="py-3.5 px-4">{t("subscribers.nextPull")}</th>
+                  {/* Select All Checkbox */}
+                  <th className="py-3.5 px-4 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredSubscribers.length > 0 &&
+                        filteredSubscribers.every((s) => selectedIds.has(s.id))
+                      }
+                      onChange={() => {
+                        const allSelected = filteredSubscribers.every((s) => selectedIds.has(s.id));
+                        if (allSelected) {
+                          setSelectedIds(new Set());
+                        } else {
+                          setSelectedIds(new Set(filteredSubscribers.map((s) => s.id)));
+                        }
+                      }}
+                      className="rounded border-black/20 text-black focus:ring-black cursor-pointer"
+                      title="Select all visible subscribers"
+                    />
+                  </th>
+
+                  {/* Wallet Address Column Header */}
+                  <th
+                    onClick={() => toggleSort("walletAddress")}
+                    className="py-3.5 px-4 cursor-pointer hover:text-black transition-colors select-none"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span>{t("subscribers.vault")}</span>
+                      {sortField === "walletAddress" ? (
+                        sortDirection === "asc" ? (
+                          <ChevronUp size={12} className="text-black" />
+                        ) : (
+                          <ChevronDown size={12} className="text-black" />
+                        )
+                      ) : (
+                        <ChevronsUpDown size={11} className="opacity-35" />
+                      )}
+                    </div>
+                  </th>
+
+                  {/* Plan Column Header */}
+                  <th
+                    onClick={() => toggleSort("planName")}
+                    className="py-3.5 px-4 cursor-pointer hover:text-black transition-colors select-none"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span>{t("subscribers.plan")}</span>
+                      {sortField === "planName" ? (
+                        sortDirection === "asc" ? (
+                          <ChevronUp size={12} className="text-black" />
+                        ) : (
+                          <ChevronDown size={12} className="text-black" />
+                        )
+                      ) : (
+                        <ChevronsUpDown size={11} className="opacity-35" />
+                      )}
+                    </div>
+                  </th>
+
+                  {/* Rate / Amount Column Header */}
+                  <th
+                    onClick={() => toggleSort("amount")}
+                    className="py-3.5 px-4 cursor-pointer hover:text-black transition-colors select-none"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span>{t("subscribers.rate")}</span>
+                      {sortField === "amount" ? (
+                        sortDirection === "asc" ? (
+                          <ChevronUp size={12} className="text-black" />
+                        ) : (
+                          <ChevronDown size={12} className="text-black" />
+                        )
+                      ) : (
+                        <ChevronsUpDown size={11} className="opacity-35" />
+                      )}
+                    </div>
+                  </th>
+
+                  {/* Settled Column Header */}
+                  <th
+                    onClick={() => toggleSort("totalSettled")}
+                    className="py-3.5 px-4 cursor-pointer hover:text-black transition-colors select-none"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span>{t("subscribers.settled")}</span>
+                      {sortField === "totalSettled" ? (
+                        sortDirection === "asc" ? (
+                          <ChevronUp size={12} className="text-black" />
+                        ) : (
+                          <ChevronDown size={12} className="text-black" />
+                        )
+                      ) : (
+                        <ChevronsUpDown size={11} className="opacity-35" />
+                      )}
+                    </div>
+                  </th>
+
+                  {/* Next Pull Column Header */}
+                  <th
+                    onClick={() => toggleSort("nextPullDate")}
+                    className="py-3.5 px-4 cursor-pointer hover:text-black transition-colors select-none"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span>{t("subscribers.nextPull")}</span>
+                      {sortField === "nextPullDate" ? (
+                        sortDirection === "asc" ? (
+                          <ChevronUp size={12} className="text-black" />
+                        ) : (
+                          <ChevronDown size={12} className="text-black" />
+                        )
+                      ) : (
+                        <ChevronsUpDown size={11} className="opacity-35" />
+                      )}
+                    </div>
+                  </th>
+
+                  {/* Status Column Header */}
                   <th className="py-3.5 px-4">{t("subscribers.status")}</th>
+
+                  {/* Actions Column Header */}
                   <th className="py-3.5 px-5 text-right">{t("subscribers.actions")}</th>
                 </tr>
               </thead>
@@ -541,21 +917,37 @@ export function SubscribersView() {
                   const isExecuting = executingPullId === sub.id;
                   const isDue = sub.status === "pending_pull";
                   const isPastDue = sub.status === "past_due";
-                  const isCancelled = sub.status === "cancelled";
+                  const isCancelled = sub.status === "cancelled" || sub.status === "churned";
+                  const isPaused = sub.status === "paused";
+                  const isSelected = selectedIds.has(sub.id);
 
                   return (
                     <tr
                       key={sub.id}
                       onClick={() => handleOpenDrawer(sub)}
-                      className="hover:bg-neutral-50/70 transition-colors cursor-pointer group"
+                      className={`hover:bg-neutral-50/70 transition-colors cursor-pointer group ${
+                        isSelected ? "bg-neutral-50/80" : ""
+                      }`}
                     >
+                      {/* Checkbox */}
+                      <td className="py-4 px-4 text-center" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelect(sub.id)}
+                          className="rounded border-black/20 text-black focus:ring-black cursor-pointer"
+                        />
+                      </td>
+
                       {/* Customer Address & Copy */}
-                      <td className="py-4 px-5">
+                      <td className="py-4 px-4">
                         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                           <span
                             className={`w-2 h-2 rounded-full shrink-0 ${
                               isCancelled
                                 ? "bg-neutral-400"
+                                : isPaused
+                                ? "bg-blue-500"
                                 : isPastDue
                                 ? "bg-red-500 animate-pulse"
                                 : isDue
@@ -629,6 +1021,11 @@ export function SubscribersView() {
                             <Clock size={11} />
                             {sub.nextPullDate}
                           </span>
+                        ) : isPaused ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                            <PauseCircle size={11} />
+                            PAUSED
+                          </span>
                         ) : (
                           <span className="font-mono text-xs text-neutral-600">
                             {sub.nextPullDate}
@@ -640,12 +1037,18 @@ export function SubscribersView() {
                       <td className="py-4 px-4">
                         {isCancelled ? (
                           <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-100 text-neutral-600 border border-neutral-200 font-medium">
-                            CANCELLED
+                            <UserX size={10} />
+                            {sub.status === "churned" ? "CHURNED" : "CANCELLED"}
+                          </span>
+                        ) : isPaused ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-medium">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                            PAUSED
                           </span>
                         ) : isPastDue ? (
                           <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200 font-medium">
                             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
-                            PAST DUE (DUNNING)
+                            PAST DUE
                           </span>
                         ) : isDue ? (
                           <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 font-medium">
@@ -717,6 +1120,63 @@ export function SubscribersView() {
                 Load Demo Mock Subscribers
               </button>
             )}
+          </div>
+        )}
+
+        {/* Sticky Action Bar for Bulk Selection */}
+        {selectedIds.size > 0 && (
+          <div className="sticky bottom-0 z-20 bg-neutral-900 border-t border-neutral-800 text-white px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xl animate-in slide-in-from-bottom duration-200">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center justify-center bg-white text-neutral-900 font-bold text-xs w-6 h-6 rounded-full shrink-0">
+                {selectedIds.size}
+              </span>
+              <div className="text-xs">
+                <span className="font-semibold">
+                  {selectedIds.size} subscriber{selectedIds.size > 1 ? "s" : ""} selected
+                </span>
+                {selectedPendingCount > 0 ? (
+                  <span className="text-neutral-400 ml-2">
+                    — {selectedPendingCount} pending pull ready (total{" "}
+                    <strong className="text-emerald-400 font-mono">
+                      ${selectedPendingAmount.toFixed(2)} USDC
+                    </strong>
+                    )
+                  </span>
+                ) : (
+                  <span className="text-neutral-400 ml-2">
+                    — no pending pulls selected
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleClearSelection}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-neutral-300 hover:text-white hover:bg-neutral-800 transition-colors"
+              >
+                Deselect All
+              </button>
+              <button
+                onClick={handleBatchPullSelected}
+                disabled={selectedPendingCount === 0 || isBatchPulling}
+                className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-black transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5 shadow-xs"
+              >
+                {isBatchPulling ? (
+                  <>
+                    <RotateCw size={12} className="animate-spin" />
+                    <span>Processing Batch...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap size={12} className="fill-current text-black" />
+                    <span>
+                      Execute Pull for Selected ({selectedPendingCount})
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         )}
       </div>

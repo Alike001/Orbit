@@ -53,20 +53,20 @@ export default async function RootLayout({
       </head>
       <body className="min-h-screen bg-[#FAFAFB] text-[#09090B] selection:bg-black selection:text-white antialiased">
         <I18nProvider initialLocale={locale}>
-          <DashboardThemeProvider><AuthProvider>
-          <FiatRatesProvider>
-          <AuthProvider>
-            <NotificationProvider>
-              <div className="flex flex-col min-h-screen">
-                <Navbar />
-                <div className="flex-1">{children}</div>
-                <Footer />
-              </div>
-              <ToastNotificationCenter />
-            </NotificationProvider>
-          </AuthProvider></DashboardThemeProvider>
-          </AuthProvider>
-          </FiatRatesProvider>
+          <DashboardThemeProvider>
+            <AuthProvider>
+              <FiatRatesProvider>
+                <NotificationProvider>
+                  <div className="flex flex-col min-h-screen">
+                    <Navbar />
+                    <div className="flex-1">{children}</div>
+                    <Footer />
+                  </div>
+                  <ToastNotificationCenter />
+                </NotificationProvider>
+              </FiatRatesProvider>
+            </AuthProvider>
+          </DashboardThemeProvider>
         </I18nProvider>
       </body>
     </html>

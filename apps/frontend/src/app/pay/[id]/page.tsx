@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { CheckCircle2, ExternalLink, Lock, ShieldCheck, Wallet } from "lucide-react";
@@ -11,8 +11,15 @@ import { LocaleSwitcher } from "@/components/layout/locale-switcher";
 import { createCheckoutVault } from "@/lib/checkout-soroban";
 
 interface HostedLinkOptions {
-  cta_text: string; accent_color: string; redirect_url: string | null;
-  collect_email: boolean; collect_discord: boolean; title: string;
+  cta_text: string;
+  accent_color: string;
+  redirect_url: string | null;
+  collect_email: boolean;
+  collect_discord: boolean;
+  title: string;
+  logo_url?: string | null;
+  headline?: string | null;
+  terms_url?: string | null;
 }
 interface Plan {
   id: string; name: string; description?: string; usdc_amount: number; interval_seconds: number;
@@ -32,6 +39,47 @@ export default function HostedCheckoutPage({ params }: { params: Promise<{ id: s
   const [error, setError] = useState("");
   const [processing, setProcessing] = useState(false);
   const [txHash, setTxHash] = useState("");
+  const [termsAgreed, setTermsAgreed] = useState(false);
+  const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
+  const [imageError, setImageError] = useState(false);
+
+  // Compute final redirect URL with vault_id and tx_hash
+  const getSuccessRedirectUrl = useCallback(() => {
+    const targetBase = hostedLink?.redirect_url || plan?.return_url;
+    if (!targetBase || !txHash) return null;
+    try {
+      const u = new URL(targetBase);
+      u.searchParams.set("vault_id", txHash);
+      u.searchParams.set("tx_hash", txHash);
+      return u.toString();
+    } catch {
+      const sep = targetBase.includes("?") ? "&" : "?";
+      return `${targetBase}${sep}vault_id=${encodeURIComponent(txHash)}&tx_hash=${encodeURIComponent(txHash)}`;
+    }
+  }, [hostedLink?.redirect_url, plan?.return_url, txHash]);
+
+  // Automatic post-settlement redirect countdown
+  useEffect(() => {
+    if (!txHash) return;
+    const finalUrl = getSuccessRedirectUrl();
+    if (!finalUrl) return;
+
+    setRedirectCountdown(5);
+    const interval = setInterval(() => {
+      setRedirectCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          if (typeof window !== "undefined") {
+            window.location.href = finalUrl;
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [txHash, getSuccessRedirectUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -90,17 +138,152 @@ export default function HostedCheckoutPage({ params }: { params: Promise<{ id: s
   return <div className="min-h-screen bg-[#fafafb] text-[#09090b]">
     <header className="h-16 px-6 sm:px-12 border-b border-black/10 bg-white flex items-center justify-between"><Brand variant="black" /><div className="flex items-center gap-4 text-xs text-neutral-600"><LocaleSwitcher /><span className="flex items-center gap-2"><Lock size={13} /> {t("secured")}</span></div></header>
     <main className="p-5 sm:p-10 grid place-items-center"><section className="w-full max-w-lg bg-white border border-black/10 rounded-2xl shadow-xl overflow-hidden">
-      <div className="p-6 border-b bg-neutral-50"><p className="text-[10px] uppercase tracking-wider text-neutral-400">{t("merchant")}</p><h1 className="font-bold">{plan.merchants.name}</h1></div>
+      <div className="p-6 border-b bg-neutral-50 flex items-center gap-3">
+        {hostedLink?.logo_url && !imageError ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={hostedLink.logo_url}
+            alt="Merchant Logo"
+            className="w-10 h-10 rounded-full object-cover border border-black/10 shrink-0"
+            onError={() => setImageError(true)}
+          />
+        ) : (
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
+            style={{ backgroundColor: hostedLink?.accent_color || "#111827" }}
+          >
+            {(hostedLink?.title || plan.merchants.name).slice(0, 1).toUpperCase()}
+          </div>
+        )}
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-wider text-neutral-400">
+            {t("merchant")}
+          </p>
+          <h1 className="font-bold text-sm sm:text-base text-black truncate">
+            {hostedLink?.headline || plan.merchants.name}
+          </h1>
+        </div>
+      </div>
       <div className="p-7 space-y-6">
-        {txHash ? <div className="text-center space-y-4"><CheckCircle2 className="mx-auto text-emerald-600" size={52} /><h2 className="text-xl font-bold">{t("confirmedTitle")}</h2><p className="text-sm text-neutral-500">{recurring ? t("confirmedRecurring") : t("confirmedOneTime")}</p><a className="button button-primary inline-flex gap-2" target="_blank" rel="noreferrer" href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}>{t("viewTx")} <ExternalLink size={14} /></a><br/><Link className="text-sm underline" href={hostedLink?.redirect_url || plan.return_url || "/"}>{t("returnToMerchant")}</Link></div> : <>
-          <div><h2 className="text-xl font-bold">{hostedLink?.title || plan.name}</h2><p className="text-sm text-neutral-500 mt-1">{plan.description || t("defaultDescription")}</p></div>
-          <div className="flex justify-between items-end border-y py-4"><span className="text-xs uppercase text-neutral-500">{recurring ? t("recurring") : t("oneTime")}</span><strong className="font-mono text-2xl">${amount.toFixed(2)} USDC</strong></div>
-          <div className="p-4 rounded-xl bg-neutral-50 text-xs text-neutral-600"><p className="font-bold text-black flex gap-2"><ShieldCheck size={16} className="text-emerald-600" /> {t("nonCustodialTitle")}</p><p className="mt-2">{t("nonCustodialBody")}</p></div>
-          {hostedLink?.collect_email && <label className="block text-sm">Email<input type="email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} className="mt-1 block w-full rounded border p-2" autoComplete="email" /></label>}
-          {hostedLink?.collect_discord && <label className="block text-sm">Discord handle<input value={discordHandle} onChange={e => setDiscordHandle(e.target.value)} className="mt-1 block w-full rounded border p-2" /></label>}
-          {!address ? <button onClick={connect} className="button button-primary w-full h-12 flex items-center justify-center gap-2"><Wallet size={16}/> {t("connectFreighter")}</button> : <><p className="text-xs text-neutral-500">{t("connected")} <span className="font-mono text-black">{address.slice(0, 8)}…{address.slice(-5)}</span></p><button disabled={processing} onClick={authorize} style={{ backgroundColor: hostedLink?.accent_color || undefined }} className="button button-primary w-full h-12">{processing ? t("processing") : hostedLink?.cta_text || t("approve")}</button></>}
-          {error && <p role="alert" className="text-sm text-red-600 text-center">{error}</p>}
-        </>}
+        {txHash ? (
+          <div className="text-center space-y-4">
+            <CheckCircle2 className="mx-auto text-emerald-600" size={52} />
+            <h2 className="text-xl font-bold">{t("confirmedTitle")}</h2>
+            <p className="text-sm text-neutral-500">
+              {recurring ? t("confirmedRecurring") : t("confirmedOneTime")}
+            </p>
+
+            {redirectCountdown !== null && redirectCountdown > 0 && getSuccessRedirectUrl() && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 font-medium">
+                Redirecting back to merchant in {redirectCountdown} second{redirectCountdown > 1 ? "s" : ""}...
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2 pt-2">
+              <a
+                className="button button-primary inline-flex items-center justify-center gap-2"
+                target="_blank"
+                rel="noreferrer"
+                href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
+              >
+                {t("viewTx")} <ExternalLink size={14} />
+              </a>
+              <a
+                className="text-sm font-semibold underline text-black hover:text-neutral-700 py-1"
+                href={getSuccessRedirectUrl() || hostedLink?.redirect_url || plan.return_url || "/"}
+              >
+                {t("returnToMerchant")}
+              </a>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div>
+              <h2 className="text-xl font-bold">{hostedLink?.title || plan.name}</h2>
+              <p className="text-sm text-neutral-500 mt-1">{plan.description || t("defaultDescription")}</p>
+            </div>
+            <div className="flex justify-between items-end border-y py-4">
+              <span className="text-xs uppercase text-neutral-500">{recurring ? t("recurring") : t("oneTime")}</span>
+              <strong className="font-mono text-2xl">${amount.toFixed(2)} USDC</strong>
+            </div>
+            <div className="p-4 rounded-xl bg-neutral-50 text-xs text-neutral-600">
+              <p className="font-bold text-black flex gap-2">
+                <ShieldCheck size={16} className="text-emerald-600 shrink-0" /> {t("nonCustodialTitle")}
+              </p>
+              <p className="mt-2">{t("nonCustodialBody")}</p>
+            </div>
+            {hostedLink?.collect_email && (
+              <label className="block text-sm">
+                Email
+                <input
+                  type="email"
+                  value={customerEmail}
+                  onChange={(e) => setCustomerEmail(e.target.value)}
+                  className="mt-1 block w-full rounded border p-2"
+                  autoComplete="email"
+                />
+              </label>
+            )}
+            {hostedLink?.collect_discord && (
+              <label className="block text-sm">
+                Discord handle
+                <input
+                  value={discordHandle}
+                  onChange={(e) => setDiscordHandle(e.target.value)}
+                  className="mt-1 block w-full rounded border p-2"
+                />
+              </label>
+            )}
+
+            {/* Terms and conditions agreement checkbox gate */}
+            {hostedLink?.terms_url && (
+              <label className="flex items-start gap-2.5 text-xs text-neutral-700 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={termsAgreed}
+                  onChange={(e) => setTermsAgreed(e.target.checked)}
+                  className="mt-0.5 rounded border-black/20 text-black focus:ring-black cursor-pointer"
+                />
+                <span>
+                  I have read and agree to the{" "}
+                  <a
+                    href={hostedLink.terms_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold underline text-black hover:text-neutral-700"
+                  >
+                    Terms and Conditions
+                  </a>
+                </span>
+              </label>
+            )}
+
+            {!address ? (
+              <button onClick={connect} className="button button-primary w-full h-12 flex items-center justify-center gap-2">
+                <Wallet size={16} /> {t("connectFreighter")}
+              </button>
+            ) : (
+              <>
+                <p className="text-xs text-neutral-500">
+                  {t("connected")} <span className="font-mono text-black">{address.slice(0, 8)}…{address.slice(-5)}</span>
+                </p>
+                <button
+                  disabled={processing || Boolean(hostedLink?.terms_url && !termsAgreed)}
+                  onClick={authorize}
+                  style={{ backgroundColor: hostedLink?.accent_color || undefined }}
+                  className="button button-primary w-full h-12 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {processing
+                    ? t("processing")
+                    : hostedLink?.terms_url && !termsAgreed
+                    ? "Accept Terms to Authorize"
+                    : hostedLink?.cta_text || t("approve")}
+                </button>
+              </>
+            )}
+            {error && <p role="alert" className="text-sm text-red-600 text-center">{error}</p>}
+          </>
+        )}
       </div></section></main>
   </div>;
 }
