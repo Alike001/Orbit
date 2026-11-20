@@ -182,6 +182,7 @@ export function NotificationProvider({
     let reconnectTimer: NodeJS.Timeout | null = null;
 
     const connectWs = () => {
+      if (!wsUrl) return;
       try {
         ws = new WebSocket(wsUrl);
         ws.onmessage = (event) => {
