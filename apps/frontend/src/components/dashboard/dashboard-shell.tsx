@@ -21,6 +21,7 @@ import {
   Copy,
   Check,
   Pencil,
+  Bell,
 } from "lucide-react";
 import { Brand } from "@/components/layout/brand";
 import { useAuth } from "@/lib/auth-context";
@@ -33,9 +34,12 @@ import { PaymentLinksView } from "./views/payment-links-view";
 import { DevelopersView } from "./views/developers-view";
 import { VaultModal } from "./modals/vault-modal";
 import { DOCS_URL } from "@/lib/links";
+import { useNotifications } from "@/lib/notification-context";
+import { NotificationDrawer } from "./drawers/notification-drawer";
 
 export function DashboardShell() {
   const router = useRouter();
+  const { unreadCount, toggleDrawer } = useNotifications();
   const { user, signOut, updateVault, updateBusinessName } = useAuth();
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
 
@@ -294,6 +298,7 @@ export function DashboardShell() {
           </div>
 
           <div className="flex items-center gap-3">
+            <button type="button" onClick={toggleDrawer} aria-label={`Notifications${unreadCount ? ` (${unreadCount} unread)` : ""}`} className="relative rounded-md p-2 hover:bg-neutral-100"><Bell size={18} />{unreadCount > 0 && <span className="absolute -top-1 -right-1 rounded-full bg-red-600 px-1 text-[10px] text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>}</button>
             <Link
               href={`${DOCS_URL}/checkout/widget`}
               className="button button-secondary text-xs h-8 px-3 flex items-center gap-1"
@@ -331,6 +336,8 @@ export function DashboardShell() {
           {activeTab === "developers" && <DevelopersView />}
         </main>
       </div>
+
+      <NotificationDrawer />
 
       {/* Vault Management Modal */}
       <VaultModal
