@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   X,
   ExternalLink,
@@ -12,7 +12,7 @@ import {
   CheckCheck,
   BellOff,
 } from "lucide-react";
-import { useNotifications, TransactionNotification, NotificationStatus } from "@/lib/notification-context";
+import { useNotifications, TransactionNotification, NotificationStatus, NotificationSeverity } from "@/lib/notification-context";
 
 export function NotificationDrawer() {
   const {
@@ -22,9 +22,25 @@ export function NotificationDrawer() {
     markAllAsRead,
     clearNotifications,
     unreadCount,
+    markAsRead,
   } = useNotifications();
 
+  const [severity, setSeverity] = useState<NotificationSeverity | "all">("all");
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!isDrawerOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeDrawer(); };
+    window.addEventListener("keydown", onKey);
+    closeRef.current?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isDrawerOpen, closeDrawer]);
   if (!isDrawerOpen) return null;
+  const filtered = notifications.filter(item => severity === "all" || (item.severity ?? (item.status === "failed" ? "error" : item.status === "confirmed" ? "success" : "info")) === severity);
+  const groups = [
+    { label: "Today", items: filtered.filter(item => new Date(item.timestamp).toDateString() === new Date().toDateString()) },
+    { label: "Yesterday", items: filtered.filter(item => new Date(item.timestamp).toDateString() === new Date(Date.now() - 86400000).toDateString()) },
+    { label: "Earlier", items: filtered.filter(item => new Date(item.timestamp).toDateString() !== new Date().toDateString() && new Date(item.timestamp).toDateString() !== new Date(Date.now() - 86400000).toDateString()) },
+  ];
 
   return (
     <div
@@ -78,6 +94,7 @@ export function NotificationDrawer() {
               )}
               <button
                 onClick={closeDrawer}
+                ref={closeRef}
                 className="p-1.5 rounded-md text-neutral-400 hover:text-black hover:bg-neutral-100 transition-colors ml-1"
                 aria-label="Close drawer"
               >
@@ -86,9 +103,10 @@ export function NotificationDrawer() {
             </div>
           </div>
 
+          <div className="flex flex-wrap gap-1 px-4 py-3 border-b border-black/10" aria-label="Filter notifications by severity">{(["all", "info", "success", "warning", "error"] as const).map(value => <button key={value} type="button" aria-pressed={severity === value} onClick={() => setSeverity(value)} className={`rounded-md px-2 py-1 text-xs capitalize ${severity === value ? "bg-black text-white" : "bg-neutral-100 text-neutral-600"}`}>{value}</button>)}</div>
           {/* Body */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {notifications.length === 0 ? (
+            {filtered.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-8 text-neutral-400">
                 <BellOff size={36} className="text-neutral-300 mb-3" />
                 <p className="text-sm font-semibold text-neutral-700">
@@ -99,9 +117,7 @@ export function NotificationDrawer() {
                 </p>
               </div>
             ) : (
-              notifications.map((item) => (
-                <NotificationItem key={item.id} notification={item} />
-              ))
+              groups.filter(group => group.items.length).map(group => <section key={group.label}><h3 className="mb-2 text-xs font-semibold text-neutral-500">{group.label}</h3><div className="space-y-2">{group.items.map(item => <div key={item.id} onClick={() => markAsRead(item.id)}><NotificationItem notification={item} /></div>)}</div></section>)
             )}
           </div>
         </div>
