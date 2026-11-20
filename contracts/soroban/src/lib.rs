@@ -552,6 +552,7 @@ pub struct SwapConfig {
 pub struct EscrowPolicy {
     pub arbitrator: Address,
     pub window_seconds: u64,
+    pub dispute_timeout_ledgers: u32,
 }
 
 #[contracttype]
@@ -564,6 +565,8 @@ pub struct EscrowHold {
     pub release_at: u64,
     pub arbitrator: Address,
     pub disputed: bool,
+    pub dispute_started_ledger: u32,
+    pub dispute_timeout_ledgers: u32,
 }
 
 /// A trusted Soroban AMM router receives only the exact reserved input transferred
@@ -753,6 +756,8 @@ fn store_escrow(
             .saturating_add(policy.window_seconds),
         arbitrator: policy.arbitrator.clone(),
         disputed: false,
+        dispute_started_ledger: 0,
+        dispute_timeout_ledgers: policy.dispute_timeout_ledgers,
     };
     env.storage().persistent().set(&hold_key, &hold);
     extend_key(env, &hold_key, policy.window_seconds);
@@ -1909,10 +1914,12 @@ impl OrbitContract {
         merchant: Address,
         arbitrator: Address,
         escrow_window_seconds: u64,
+        dispute_timeout_ledgers: u32,
     ) {
         user.require_auth();
         merchant.require_auth();
         assert!(escrow_window_seconds > 0, "Escrow window must be positive");
+        assert!(dispute_timeout_ledgers > 0, "Dispute timeout must be positive");
         let vault: VaultData = env
             .storage()
             .persistent()
@@ -1927,6 +1934,7 @@ impl OrbitContract {
             &EscrowPolicy {
                 arbitrator,
                 window_seconds: escrow_window_seconds,
+                dispute_timeout_ledgers,
             },
         );
         extend_key(
@@ -1956,6 +1964,7 @@ impl OrbitContract {
         );
         assert!(!hold.disputed, "Already disputed");
         hold.disputed = true;
+        hold.dispute_started_ledger = env.ledger().sequence();
         env.storage().persistent().set(&key, &hold);
     }
 
@@ -1972,6 +1981,11 @@ impl OrbitContract {
             .expect("Escrow does not exist");
         assert!(hold.disputed, "Escrow is not disputed");
         assert!(hold.arbitrator == arbitrator, "Unauthorized arbitrator");
+        assert!(
+            env.ledger().sequence().saturating_sub(hold.dispute_started_ledger)
+                < hold.dispute_timeout_ledgers,
+            "Dispute timeout elapsed"
+        );
         env.storage().persistent().remove(&key);
         let refund = (hold.amount / 100) * i128::from(refund_percentage)
             + ((hold.amount % 100) * i128::from(refund_percentage) / 100);
@@ -2004,6 +2018,41 @@ impl OrbitContract {
             &env.current_contract_address(),
             &merchant,
             &hold.amount,
+        );
+    }
+
+    /// Claims an active dispute after its configured ledger timeout. The
+    /// depositor may request an automatic refund, or the merchant may claim
+    /// the full balance as the default settlement fallback.
+    pub fn claim_expired_dispute(env: Env, escrow_id: u64, caller: Address) {
+        caller.require_auth();
+        let key = SubscriptionKey::Escrow(escrow_id);
+        let hold: EscrowHold = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Escrow does not exist");
+        assert!(hold.disputed, "Escrow is not disputed");
+        assert!(
+            hold.user == caller || hold.merchant == caller,
+            "Unauthorized escrow claimant"
+        );
+        let elapsed = env
+            .ledger()
+            .sequence()
+            .saturating_sub(hold.dispute_started_ledger);
+        assert!(
+            elapsed >= hold.dispute_timeout_ledgers,
+            "Dispute timeout has not elapsed"
+        );
+
+        env.storage().persistent().remove(&key);
+        let contract = env.current_contract_address();
+        let token = token::Client::new(&env, &hold.token);
+        token.transfer(&contract, &caller, &hold.amount);
+        env.events().publish(
+            (Symbol::new(&env, "esc_tout"), escrow_id, caller),
+            hold.amount,
         );
     }
 

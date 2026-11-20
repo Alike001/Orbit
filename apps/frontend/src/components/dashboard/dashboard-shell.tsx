@@ -30,6 +30,7 @@ import {
   BarChart3,
   Mail,
   FileSpreadsheet,
+  Droplets,
 } from "lucide-react";
 import { useDashboardTheme, type ThemePreference } from "@/lib/dashboard-theme";
 import { useFiatRates, type FiatCurrency } from "@/lib/fiat-rates";
@@ -79,6 +80,8 @@ export function DashboardShell() {
   const [copiedId, setCopiedId] = useState(false);
   const [isEditingBusinessName, setIsEditingBusinessName] = useState(false);
   const [businessNameInput, setBusinessNameInput] = useState("");
+  const [faucetStatus, setFaucetStatus] = useState<string | null>(null);
+  const [faucetBusy, setFaucetBusy] = useState(false);
 
   if (!user) return null;
 
@@ -94,6 +97,28 @@ export function DashboardShell() {
     navigator.clipboard.writeText(user.id);
     setCopiedId(true);
     setTimeout(() => setCopiedId(false), 2000);
+  };
+
+  const requestTestnetFaucet = async () => {
+    if (!user.walletAddress || activeNetwork !== "stellar-testnet") return;
+    setFaucetBusy(true);
+    setFaucetStatus("Funding XLM and USDC...");
+    try {
+      const response = await fetch("/api/dev/fund", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ public_key: user.walletAddress }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Faucet request failed");
+      setFaucetStatus("Testnet funds requested");
+      window.dispatchEvent(new CustomEvent("orbit:balance-refresh"));
+      setTimeout(() => setFaucetStatus(null), 3000);
+    } catch (error) {
+      setFaucetStatus(error instanceof Error ? error.message : "Faucet request failed");
+    } finally {
+      setFaucetBusy(false);
+    }
   };
 
   const navItems = [
@@ -342,6 +367,44 @@ export function DashboardShell() {
         {/* Top Header */}
         <header className="h-16 px-6 border-b border-black/10 bg-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsNetworkDropdownOpen((open) => !open)}
+                aria-expanded={isNetworkDropdownOpen}
+                className="flex h-8 items-center gap-2 rounded-md border border-black/10 bg-white px-2.5 text-xs font-medium text-neutral-800"
+              >
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                {NETWORKS[activeNetwork].name}
+                <ChevronDown size={12} />
+              </button>
+              {isNetworkDropdownOpen && (
+                <div className="absolute right-0 z-50 mt-2 w-56 rounded-lg border border-black/10 bg-white p-1 shadow-xl">
+                  {(Object.keys(NETWORKS) as NetworkId[]).map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => { setActiveNetwork(id); setIsNetworkDropdownOpen(false); }}
+                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs hover:bg-neutral-100"
+                    >
+                      <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" />{NETWORKS[id].name}</span>
+                      {activeNetwork === id && <Check size={13} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {activeNetwork === "stellar-testnet" && (
+              <button
+                type="button"
+                onClick={requestTestnetFaucet}
+                disabled={faucetBusy || !user.walletAddress}
+                className="flex h-8 items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 text-xs font-semibold text-indigo-800 disabled:opacity-50"
+              >
+                <Droplets size={13} />
+                {faucetBusy ? "Funding..." : "Request Testnet USDC / XLM"}
+              </button>
+            )}
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               className="lg:hidden p-2 rounded-md hover:bg-neutral-100 text-neutral-600"
@@ -413,7 +476,18 @@ export function DashboardShell() {
           </div>
         </header>
 
-        {walletNetworkWarning && <div role="alert" className="mx-6 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{walletNetworkWarning}</div>}
+        {walletNetworkWarning && (
+          <div role="alert" className="mx-6 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+            <span>{walletNetworkWarning}</span>
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent("orbit:open-freighter-network"))}
+              className="shrink-0 rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold"
+            >
+              Switch Wallet Network
+            </button>
+          </div>
+        )}
         {fiatError && <p role="status" className="px-6 pt-2 text-xs text-amber-800">Fiat exchange rates may be temporarily unavailable; USDC amounts remain authoritative.</p>}
         {/* Tab Content */}
         <main className="flex-1 p-6 md:p-8 overflow-y-auto max-w-6xl w-full mx-auto">

@@ -85,7 +85,7 @@ fn fuzz_invariant_solvency_escrow_and_streams() {
     let escrow_window: u64 = 43_200;
 
     client.create_vault(&user, &merchant, &token_address, &vault_amount, &interval);
-    client.configure_escrow(&user, &merchant, &arbitrator, &escrow_window);
+    client.configure_escrow(&user, &merchant, &arbitrator, &escrow_window, &518400);
 
     let mut tracked_escrow_ids: [u64; 32] = [0; 32];
     let mut escrow_count: usize = 0;

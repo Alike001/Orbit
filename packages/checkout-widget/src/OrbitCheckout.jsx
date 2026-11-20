@@ -323,6 +323,14 @@ export default function OrbitCheckout({
       });
     } else if (type === "orbit:close") {
       checkoutBridge.current?.send({ type: CHECKOUT_EVENTS.closed });
+    if (typeof window === 'undefined') return;
+    const normalizedType = type === 'orbit:subscribed' ? 'orbit:success' : type;
+    window.dispatchEvent(new CustomEvent(normalizedType, {
+      detail: { ...detail, planId: detail.planId || planId },
+    }));
+    if (window.parent !== window) {
+      const origins = allowedOrigins.length ? allowedOrigins : [window.location.origin];
+      origins.forEach((origin) => window.parent.postMessage({ type, ...detail }, origin));
     }
   };
 

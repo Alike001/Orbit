@@ -12,7 +12,7 @@ export type DashboardTab =
   | "team"
   | "developers";
 
-export type NetworkId = "stellar-testnet";
+export type NetworkId = "stellar-testnet" | "stellar-futurenet" | "stellar-local";
 
 export interface NetworkConfig {
   id: NetworkId;
@@ -30,6 +30,22 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     badge: "Soroban Rust",
     currency: "USDC",
     explorerUrl: "https://stellar.expert/explorer/testnet",
+    contractStandard: "SEP-0041 / Soroban Vault",
+  },
+  "stellar-futurenet": {
+    id: "stellar-futurenet",
+    name: "Stellar Futurenet",
+    badge: "Soroban Rust",
+    currency: "USDC",
+    explorerUrl: "https://stellar.expert/explorer/futurenet",
+    contractStandard: "SEP-0041 / Soroban Vault",
+  },
+  "stellar-local": {
+    id: "stellar-local",
+    name: "Standalone Local",
+    badge: "Soroban Local",
+    currency: "USDC",
+    explorerUrl: "http://localhost:8000",
     contractStandard: "SEP-0041 / Soroban Vault",
   },
 };

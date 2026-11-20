@@ -3,6 +3,7 @@ import request from 'supertest';
 import { Keypair } from '@stellar/stellar-sdk';
 import app from '../index.js';
 import { makeApiKey } from './helpers.js';
+import { validateGraphqlQuery } from '../graphql.js';
 
 const merchantId = '7f8b9a10-b2c3-4d5e-a6f7-112233445566';
 const planId = 'e0b8e99b-5136-4d1d-9351-91a5db4fb056';
@@ -37,6 +38,16 @@ afterAll(async () => { await app.locals.graphqlServer.stop(); });
 const gql = (query, variables, auth = key.header) => request(app).post('/graphql').set('Authorization', auth).send({ query, variables });
 
 describe('Federated merchant analytics API', () => {
+  it('rejects excessive GraphQL depth and complexity before execution', () => {
+    expect(() => validateGraphqlQuery('{ merchant(id: "7f8b9a10-b2c3-4d5e-a6f7-112233445566") { plans { merchant { plans { merchant { plans { merchant { plans { name } } } } } } } } }'))
+      .toThrow(/depth exceeds maximum|depth/);
+    expect(() => validateGraphqlQuery('{ subscribers { nodes { plan { merchant { subscriptions { nodes { payments(pagination: { limit: 100 }) { id } } } } } } } } }'))
+      .toThrow(/complexity.*exceeds maximum/);
+  });
+  it('allows a higher GraphQL budget for an internal service token', () => {
+    const source = '{ subscribers { nodes { plan { merchant { subscriptions { nodes { payments { id } } } } } } } }';
+    expect(validateGraphqlQuery(source, { internalService: true }).cost).toBeGreaterThan(0);
+  });
   it('requires a verified merchant identity', async () => {
     const response = await request(app).post('/graphql').send({ query: '{ subscribers { total } }' });
     expect(response.status).toBe(401);
