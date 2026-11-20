@@ -134,6 +134,14 @@ const session = await verifyAnalyticsSignature(
     : [], [analytics]);
   const chartPath = chartPoints.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`).join(" ");
   const hoveredDay = chartPoints.find(point => point.date === hoveredDate);
+  const settledTrend = useMemo(() => {
+    if (!chartPoints.length) return null;
+    const midpoint = Math.floor(chartPoints.length / 2);
+    const earlier = chartPoints.slice(0, midpoint).reduce((sum, point) => sum + BigInt(point.units), 0n);
+    const later = chartPoints.slice(midpoint).reduce((sum, point) => sum + BigInt(point.units), 0n);
+    if (earlier === 0n) return null;
+    return (Number((later - earlier) * 10000n / earlier) / 100).toFixed(1);
+  }, [chartPoints]);
 
   // Aggregated Customer Churn Analytics & Survey Metrics (#249)
   const churnData = useMemo(() => {
@@ -349,7 +357,7 @@ const session = await verifyAnalyticsSignature(
                 ))}
               </svg>
               {hoveredDay && <div className="absolute top-0 right-0 bg-black text-white text-xs px-3 py-1.5 rounded-lg shadow-md font-mono">
-                {hoveredDay.date}: {formatRawUsdc(hoveredDay.units)} USDC
+                {hoveredDay.date}: {formatRawUsdc(hoveredDay.units)} USDC · transaction count unavailable
               </div>}
               <div className="flex justify-between text-[11px] font-mono text-neutral-400 pt-3 border-t border-black/5">
                 <span>{chartPoints[0]?.date}</span><span>{chartPoints[chartPoints.length - 1]?.date}</span>
@@ -357,6 +365,7 @@ const session = await verifyAnalyticsSignature(
             </div>
           )}
           <div className="text-xs text-neutral-500 mt-3">Settled in this period: {formatRawUsdc(analytics?.period_settled_usdc_units)} USDC</div>
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs"><div className="rounded-lg bg-neutral-50 border p-3"><strong className="block text-black">Period velocity</strong><span>{settledTrend === null ? "Insufficient earlier-period volume" : `${settledTrend}% · second half vs first half`}</span></div><div className="rounded-lg bg-neutral-50 border p-3"><strong className="block text-black">Volume breakdown</strong><span>Verified settlements: {formatRawUsdc(analytics?.period_settled_usdc_units)} USDC</span><p className="mt-1">Subscription-tier, payroll, fees and transaction-count breakdowns are unavailable in the current analytics response.</p></div></div>
         </div>
 
         {/* Quick Launch & Actions (1 col) */}
