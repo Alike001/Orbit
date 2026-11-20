@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   X,
   Copy,
@@ -14,6 +14,19 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { WebhookDeliveryLog } from "../dashboard-types";
+
+/** Highlight JSON without trusting payloads as HTML. */
+function highlightedJson(source: string): ReactNode[] {
+  const parts = source.split(/("(?:\\.|[^"\\])*"|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?|\\btrue\\b|\\bfalse\\b|\\bnull\\b)/g);
+  return parts.map((part, i) => {
+    if (!part) return null;
+    const isString = part.startsWith('"');
+    const isKey = isString && /^\\s*:/.test(parts.slice(i + 1).find(Boolean) || "");
+    const isLiteral = /^(true|false|null|-?\\d)/.test(part);
+    const color = isKey ? "text-sky-300" : isString ? "text-emerald-300" : isLiteral ? "text-amber-300" : "";
+    return <span key={i} className={color}>{part}</span>;
+  });
+}
 
 interface WebhookDeliveryDrawerProps {
   isOpen: boolean;
@@ -174,7 +187,7 @@ export function WebhookDeliveryDrawer({
             </div>
             <div className="rounded-lg bg-[#09090b] text-neutral-200 p-3.5 font-mono text-[11px] overflow-x-auto border border-neutral-800">
               <pre>
-                <code>{formattedHeaders}</code>
+                <code>{highlightedJson(formattedHeaders)}</code>
               </pre>
             </div>
           </div>
@@ -205,7 +218,7 @@ export function WebhookDeliveryDrawer({
             </div>
             <div className="rounded-lg bg-[#09090b] text-neutral-200 p-3.5 font-mono text-[11px] overflow-x-auto border border-neutral-800">
               <pre>
-                <code>{formattedPayload}</code>
+                <code>{highlightedJson(formattedPayload)}</code>
               </pre>
             </div>
           </div>

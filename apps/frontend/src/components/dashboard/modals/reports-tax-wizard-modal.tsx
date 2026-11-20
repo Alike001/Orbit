@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import { SettledExportsPanel } from "../settled-exports-panel";
 import {
   ArrowLeft,
   ArrowRight,
@@ -477,7 +478,9 @@ export function ReportsTaxWizardModal({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto flex-1">
+        <div className="p-6 overflow-y-auto flex-1 space-y-6">
+          <SettledExportsPanel isOpen={isOpen} />
+          <p className="text-[11px] text-amber-800">The tax wizard below uses illustrative preview data. For confirmed payments and official receipts, use the authenticated export above.</p>
           {/* STEP 1: CONFIGURATION */}
           {currentStep === 1 && (
             <div className="space-y-6 animate-in fade-in duration-150">
