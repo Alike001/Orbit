@@ -25,15 +25,13 @@ export function CreateApiKeyModal({ isOpen, onClose, onCreateKey }: CreateApiKey
     e.preventDefault();
     if (!keyName.trim() || scopes.length === 0) return;
 
-    const randomSuffix = Array.from({ length: 32 }, () =>
-      Math.floor(Math.random() * 36).toString(36)
-    ).join("");
+    const randomSuffix = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
     const prefix = environment === "live" ? "orb_live" : "orb_test";
     const fullKey = `${prefix}_${randomSuffix}`;
 
     const newKeyRecord: ApiKeyRecord = {
-      id: `key_${Math.random().toString(36).substring(2, 8)}`,
+      id: `key_${crypto.randomUUID()}`,
       name: keyName.trim(),
       keyPrefix: `${prefix}_...${randomSuffix.slice(-4)}`,
       fullKeyPreview: fullKey,
