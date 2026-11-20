@@ -296,13 +296,15 @@ export default function OrbitCheckout({
   };
 
   const dispatch = (type, detail = {}) => {
-    if (typeof window === "undefined" || window.parent === window) return;
-    const origins = allowedOrigins.length
-      ? allowedOrigins
-      : [window.location.origin];
-    origins.forEach((origin) =>
-      window.parent.postMessage({ type, ...detail }, origin),
-    );
+    if (typeof window === 'undefined') return;
+    const normalizedType = type === 'orbit:subscribed' ? 'orbit:success' : type;
+    window.dispatchEvent(new CustomEvent(normalizedType, {
+      detail: { ...detail, planId: detail.planId || planId },
+    }));
+    if (window.parent !== window) {
+      const origins = allowedOrigins.length ? allowedOrigins : [window.location.origin];
+      origins.forEach((origin) => window.parent.postMessage({ type, ...detail }, origin));
+    }
   };
 
   const validateForm = () => {

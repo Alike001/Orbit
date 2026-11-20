@@ -2719,7 +2719,7 @@ fn test_escrow_claim_dispute_and_partial_arbitration() {
     let client = OrbitContractClient::new(&env, &id);
     token.approve(&user, &id, &1_000, &2_000_000);
     client.create_vault(&user, &merchant, &token_id, &100, &100);
-    client.configure_escrow(&user, &merchant, &arbitrator, &30);
+    client.configure_escrow(&user, &merchant, &arbitrator, &30, &518400);
 
     env.ledger().set_timestamp(10);
     client.pull_funds(&user, &merchant);
@@ -2729,6 +2729,7 @@ fn test_escrow_claim_dispute_and_partial_arbitration() {
     assert!(client.try_claim_escrow_funds(&merchant, &0).is_err());
     client.raise_dispute(&user, &merchant, &0);
     env.ledger().set_timestamp(41);
+    assert!(client.try_claim_expired_dispute(&0, &merchant).is_err());
     assert!(client.try_claim_escrow_funds(&merchant, &0).is_err());
     assert!(client.try_resolve_dispute(&user, &0, &50).is_err());
     assert!(client.try_resolve_dispute(&arbitrator, &0, &101).is_err());
@@ -2745,6 +2746,14 @@ fn test_escrow_claim_dispute_and_partial_arbitration() {
     client.claim_escrow_funds(&merchant, &1);
     assert_eq!(token.balance(&merchant), 175);
     assert!(client.get_escrow(&1).is_none());
+
+    client.pull_funds(&user, &merchant);
+    client.raise_dispute(&user, &merchant, &2);
+    assert!(client.try_claim_expired_dispute(&2, &arbitrator).is_err());
+    env.ledger().set_sequence_number(1036802);
+    client.claim_expired_dispute(&2, &merchant);
+    assert_eq!(token.balance(&merchant), 275);
+    assert!(client.get_escrow(&2).is_none());
 }
 
 #[soroban_sdk::contract]
