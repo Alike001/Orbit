@@ -1,5 +1,7 @@
 "use client";
 
+import { useDialogFocus } from "./use-dialog-focus";
+
 import { useState, useEffect } from "react";
 import {
   X,
@@ -55,6 +57,8 @@ export function VaultModal({ isOpen, onClose, user, onUpdateVault }: VaultModalP
   const [discountAccepted, setDiscountAccepted] = useState(false);
   const [cancellingOnChain, setCancellingOnChain] = useState(false);
   const [cancelTxHash, setCancelTxHash] = useState<string | null>(null);
+
+  const dialogRef = useDialogFocus(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -139,7 +143,7 @@ export function VaultModal({ isOpen, onClose, user, onUpdateVault }: VaultModalP
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Vault management" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div className="w-full max-w-xl rounded-xl bg-white border border-black/10 shadow-2xl p-6 max-h-[90vh] overflow-y-auto text-black">
         <div className="flex items-center justify-between pb-4 border-b border-black/10">
           <div className="flex items-center gap-2.5">

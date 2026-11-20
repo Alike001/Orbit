@@ -1,4 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { resolveCheckoutTheme } from "./checkoutTheme";
+import { checkUsdcReadiness, usdcReadinessMessage } from "./usdcReadiness";
+import { CHECKOUT_EVENTS, createCheckoutMessageBridge } from "./checkoutMessageBridge";
 import gsap from "gsap";
 import {
   completeHandover,
@@ -95,6 +98,7 @@ const WALLET_MODULES = [
   [XBULL_ID, "xBull", xBullModule],
 ];
 const DEFAULT_WALLETS = WALLET_MODULES.map(([id]) => id);
+const DEFAULT_ALLOWED_ORIGINS = [];
 const DEMO_ADDRESS = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const PLAN_CURRENCY_CODE = "USDC";
 const SLIPPAGE_OPTIONS = [0.5, 1, 3];
@@ -118,7 +122,7 @@ export default function OrbitCheckout({
   borderRadius = "md",
   fontFamily = "inherit",
   customClasses = {},
-  allowedOrigins = [],
+  allowedOrigins = DEFAULT_ALLOWED_ORIGINS,
   customFields = [],
   walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID,
   termsUrl = "",
@@ -184,6 +188,12 @@ export default function OrbitCheckout({
   const [showWallets, setShowWallets] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [receipt, setReceipt] = useState(null);
+  const [usdcReadiness, setUsdcReadiness] = useState(null);
+  const [usdcCheckPending, setUsdcCheckPending] = useState(false);
+  const [usdcCheckError, setUsdcCheckError] = useState("");
+  const checkoutBridge = useRef(null);
+  const walletModal = useRef(null);
+  const bridgeModal = useRef(null);
   const [handoverSession, setHandoverSession] = useState(null);
   const [handoverBusy, setHandoverBusy] = useState(false);
   const handoverWatcher = useRef(null);
@@ -276,26 +286,43 @@ export default function OrbitCheckout({
     }
   }, []);
 
-  // #266 — theme: parent dark/light class takes precedence over matchMedia
-  const actualTheme =
-    observedTheme ??
-    (theme === "auto" &&
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : theme);
-  const rootStyle = {
-    "--orbit-accent": accentColor,
-    "--orbit-radius": RADIUS[borderRadius] || RADIUS.md,
-    "--orbit-font": fontFamily,
-    "--orbit-surface": actualTheme === "dark" ? "#171923" : "#fff",
-    "--orbit-text": actualTheme === "dark" ? "#f8fafc" : "#101828",
-    "--orbit-muted": actualTheme === "dark" ? "#a7b0c0" : "#667085",
-    "--orbit-border": actualTheme === "dark" ? "#34394a" : "#d0d5dd",
-    "--orbit-error": actualTheme === "dark" ? "#ffb4ab" : "#b42318",
-  };
+  // Respect inherited theme observations (#266) unless a merchant config overrides it.
+  const { style: rootStyle, logoUrl } = resolveCheckoutTheme(
+    typeof theme === "object" ? theme : {},
+    {
+      theme: typeof theme === "string" ? (observedTheme ?? theme) : "auto",
+      accentColor, borderRadius, fontFamily,
+    },
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const nonce = window.crypto?.randomUUID?.() ||
+      Array.from(window.crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    const bridge = createCheckoutMessageBridge({ windowRef: window, allowedOrigins, nonce });
+    checkoutBridge.current = bridge;
+    return () => {
+      bridge.dispose();
+      if (checkoutBridge.current === bridge) checkoutBridge.current = null;
+    };
+  }, [allowedOrigins]);
 
   const dispatch = (type, detail = {}) => {
+    if (type === "orbit:subscribed") {
+      checkoutBridge.current?.send({
+        type: CHECKOUT_EVENTS.success,
+        vaultId: String(detail.vaultId || detail.subscriptionId || detail.txHash || ""),
+        transactionHash: String(detail.txHash || ""),
+        timestamp: new Date().toISOString(),
+      });
+    } else if (type === "orbit:error") {
+      checkoutBridge.current?.send({
+        type: CHECKOUT_EVENTS.failed,
+        code: detail.code || "CHECKOUT_ERROR",
+        message: String(detail.message || "Checkout failed"),
+      });
+    } else if (type === "orbit:close") {
+      checkoutBridge.current?.send({ type: CHECKOUT_EVENTS.closed });
     if (typeof window === 'undefined') return;
     const normalizedType = type === 'orbit:subscribed' ? 'orbit:success' : type;
     window.dispatchEvent(new CustomEvent(normalizedType, {
@@ -306,6 +333,35 @@ export default function OrbitCheckout({
       origins.forEach((origin) => window.parent.postMessage({ type, ...detail }, origin));
     }
   };
+
+  useEffect(() => {
+    const modal = bridgeOpen ? bridgeModal.current : showWallets ? walletModal.current : null;
+    if (!modal) return undefined;
+    const previous = document.activeElement;
+    const focusable = () => [...modal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    focusable()[0]?.focus();
+    const keydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (bridgeOpen) setBridgeOpen(false);
+        else { setShowWallets(false); checkoutBridge.current?.send({ type: CHECKOUT_EVENTS.closed }); }
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) { event.preventDefault(); modal.focus(); return; }
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => {
+      document.removeEventListener("keydown", keydown);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [showWallets, bridgeOpen]);
 
   const validateForm = () => {
     if (!customFields || customFields.length === 0) return true;
@@ -815,6 +871,20 @@ export default function OrbitCheckout({
   const isSwap =
     Boolean(selectedPayWith) && selectedPayWith.code !== PLAN_CURRENCY_CODE;
 
+  useEffect(() => {
+    if (!address || !plan?.usdc_amount || !planCurrency || isDemo) {
+      setUsdcReadiness(null); setUsdcCheckPending(false); setUsdcCheckError("");
+      return undefined;
+    }
+    let cancelled = false;
+    setUsdcReadiness(null); setUsdcCheckPending(true); setUsdcCheckError("");
+    checkUsdcReadiness({ horizonUrl, address, asset: planCurrency, amount: plan.usdc_amount })
+      .then((result) => { if (!cancelled) setUsdcReadiness(result); })
+      .catch((reason) => { if (!cancelled) setUsdcCheckError(reason.message || "Unable to verify USDC."); })
+      .finally(() => { if (!cancelled) setUsdcCheckPending(false); });
+    return () => { cancelled = true; };
+  }, [horizonUrl, address, plan?.usdc_amount, planCurrency, isDemo, balanceRefreshTick]);
+
   // Load the wallet's spendable balances once it connects
   useEffect(() => {
     if (!address || isDemo) {
@@ -1006,6 +1076,7 @@ export default function OrbitCheckout({
           setAddress(confirmed.customerWalletAddress || "");
           setReceipt({ vaultHash: confirmed.txHash, mobile: true });
           dispatch("orbit:subscribed", {
+            vaultId: confirmed.vaultId || confirmed.subscriptionId,
             subscriptionId: confirmed.subscriptionId,
             planId: session.planId,
             txHash: confirmed.txHash,
@@ -1067,6 +1138,11 @@ export default function OrbitCheckout({
         return;
       }
 
+      if (!isSwap) {
+        const current = await checkUsdcReadiness({ horizonUrl, address, asset: planCurrency, amount: plan.usdc_amount });
+        setUsdcReadiness(current);
+        if (current.status !== "ready") throw new Error(usdcReadinessMessage(current));
+      }
       if (isSwap && (!swapQuote || swapQuoteLoading)) {
         throw new Error(
           "Waiting for a live swap quote. Try again in a moment.",
@@ -1220,6 +1296,7 @@ export default function OrbitCheckout({
       setPending(null);
       setReceipt(hashes);
       dispatch("orbit:subscribed", {
+        vaultId: subscription.vault_id || subscription.vaultId || subscription.id,
         subscriptionId: subscription.id,
         planId: plan.id || planId,
         txHash: hashes.vaultHash,
@@ -1307,6 +1384,7 @@ export default function OrbitCheckout({
 
   return (
     <section
+      ref={widgetRef}
       className={`orbit-checkout-root ${customClasses.modal || ""}`}
       style={{ ...styles.card, ...rootStyle }}
       aria-label="Orbit checkout"
@@ -1357,6 +1435,7 @@ export default function OrbitCheckout({
       `}</style>
 
       <div className={customClasses.header}>
+        {logoUrl && <img src={logoUrl} alt={`${plan.merchants?.name || "Merchant"} logo`} style={{ width: "auto", maxWidth: 160, height: 48, objectFit: "contain", marginBottom: 12 }} />}
         <p style={styles.eyebrow}>{plan.merchants?.name || "Orbit merchant"}</p>
         <h2>{plan.name}</h2>
       </div>
@@ -1777,6 +1856,14 @@ export default function OrbitCheckout({
         </div>
       )}
 
+      {address && !isDemo && !receipt && !isSwap && (
+        <div role={usdcCheckError || (usdcReadiness && usdcReadiness.status !== "ready") ? "alert" : "status"} className="orbit-fee" style={{ textAlign: "left", fontSize: 13 }}>
+          {usdcCheckPending ? "Checking Stellar USDC trustline and balance…" : usdcCheckError || usdcReadinessMessage(usdcReadiness) || `USDC ready: ${usdcReadiness?.balance} available.`}
+          {usdcReadiness?.status === "trustline_missing" && <p><strong>Action:</strong> Add the USDC asset trustline in your Stellar wallet, then refresh below.</p>}
+          {["insufficient", "account_missing"].includes(usdcReadiness?.status) && <p><strong>Action:</strong> Fund this wallet with USDC (and XLM for network fees), then refresh below.</p>}
+          <button type="button" style={styles.cancel} onClick={() => setBalanceRefreshTick((n) => n + 1)}>Recheck USDC</button>
+        </div>
+      )}
       {receipt ? (
         <div ref={successElement} role="status" aria-live="polite">
           <h3>
@@ -1913,9 +2000,11 @@ export default function OrbitCheckout({
                 processing ||
                 isWrongNetwork ||
                 !consentSatisfied ||
+                (!isSwap && !isDemo && (usdcCheckPending || !!usdcCheckError || usdcReadiness?.status !== "ready")) ||
                 (isSwap && (!swapQuote || swapQuoteLoading))
               }
               onClick={subscribe}
+              title={!isSwap && !isDemo ? (usdcCheckError || usdcReadinessMessage(usdcReadiness) || undefined) : undefined}
             >
               {processing
                 ? "Preparing transaction..."
@@ -1975,6 +2064,8 @@ export default function OrbitCheckout({
           role="dialog"
           aria-modal="true"
           aria-labelledby="wallet-title"
+          ref={walletModal}
+          tabIndex={-1}
           style={styles.dialog}
         >
           <h3 id="wallet-title">Choose Payment Method</h3>
@@ -2159,6 +2250,8 @@ export default function OrbitCheckout({
           role="dialog"
           aria-modal="true"
           aria-labelledby="bridge-title"
+          ref={bridgeModal}
+          tabIndex={-1}
           style={styles.dialog}
         >
           <h3 id="bridge-title">Bridge USDC to Stellar</h3>

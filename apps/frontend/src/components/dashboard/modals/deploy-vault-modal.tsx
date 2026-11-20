@@ -1,5 +1,7 @@
 "use client";
 
+import { useDialogFocus } from "./use-dialog-focus";
+
 import { useState, useEffect } from "react";
 import {
   X,
@@ -62,6 +64,8 @@ export function DeployVaultModal({ isOpen, onClose, onSuccess }: DeployVaultModa
       setAdminAddress(user.walletAddress);
     }
   }, [user?.walletAddress, adminAddress]);
+
+  const dialogRef = useDialogFocus(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -156,7 +160,7 @@ export function DeployVaultModal({ isOpen, onClose, onSuccess }: DeployVaultModa
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Deploy branded vault" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div className="w-full max-w-2xl rounded-2xl bg-white border border-black/10 shadow-2xl overflow-hidden flex flex-col">
         {/* Header */}
         <div className="px-6 py-5 border-b border-black/10 flex items-center justify-between bg-neutral-50/50">
