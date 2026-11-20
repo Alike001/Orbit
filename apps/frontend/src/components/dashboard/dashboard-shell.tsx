@@ -36,6 +36,7 @@ import { VaultModal } from "./modals/vault-modal";
 import { DOCS_URL } from "@/lib/links";
 import { useNotifications } from "@/lib/notification-context";
 import { NotificationDrawer } from "./drawers/notification-drawer";
+import { NotificationToasts } from "./notification-toasts";
 
 export function DashboardShell() {
   const router = useRouter();
@@ -338,6 +339,7 @@ export function DashboardShell() {
       </div>
 
       <NotificationDrawer />
+      <NotificationToasts />
 
       {/* Vault Management Modal */}
       <VaultModal
