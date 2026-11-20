@@ -2197,6 +2197,59 @@ impl OrbitContract {
         env.storage().instance().extend_ttl(threshold, extend_to);
     }
 
+    /// Issue #269: Gas-efficient subscription tier migration with dual authorization.
+    ///
+    /// Updates a vault's amount and interval in a single transaction instead of
+    /// cancel + recreate, preserving subscriber longevity metrics and halving fees.
+    /// Requires both user and merchant authorization to prevent unilateral rate hikes.
+    /// Aligns `last_pull_timestamp` to the current ledger so the new cycle starts
+    /// cleanly without retroactive back-billing.
+    pub fn update_vault(
+        env: Env,
+        user: Address,
+        merchant: Address,
+        new_amount: i128,
+        new_interval_ledgers: u64,
+    ) {
+        // Dual authorization: both parties must consent to the new terms
+        user.require_auth();
+        merchant.require_auth();
+
+        assert!(new_amount > 0, "new_amount must be positive");
+        assert!(
+            new_interval_ledgers > 0,
+            "new_interval_ledgers must be greater than zero"
+        );
+
+        let key = vault_key(&user, &merchant);
+        let mut vault = load_vault(&env, &key).expect("Vault does not exist");
+
+        // Preserve existing vault history — only update the terms
+        vault.amount_per_interval = new_amount;
+        // Convert ledger count to seconds for storage consistency
+        vault.interval_seconds = new_interval_ledgers.saturating_mul(SECONDS_PER_LEDGER);
+
+        // Proration / Reset Alignment: reset the billing cycle to now so the
+        // new interval starts cleanly and elapsed time isn't back-billed
+        vault.last_pull_timestamp = env.ledger().timestamp();
+
+        save_vault(&env, &key, &vault);
+
+        // Event Emission: emit update event for backend indexers
+        env.events().publish(
+            (soroban_sdk::symbol_short!("v_upd"), &user, &merchant),
+            (new_amount, new_interval_ledgers),
+        );
+
+        // Extend storage TTL for the new interval
+        let (threshold, extend_to) =
+            calculate_ttl_params(vault.interval_seconds);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
+        env.storage().instance().extend_ttl(threshold, extend_to);
+    }
+
     /// Unfreeze a vault. The billing timestamp is reset to the current ledger
     /// timestamp so intervals that elapsed while paused are not back-billed
     /// retroactively (#93).
