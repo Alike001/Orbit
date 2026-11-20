@@ -30,6 +30,7 @@ import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { ApiKeyRecord, WebhookEndpoint, WebhookDeliveryLog } from "../dashboard-types";
 import { CreateApiKeyModal } from "../modals/create-api-key-modal";
+import { ApiPlayground } from "../api-playground";
 import { RegisterWebhookModal } from "../modals/register-webhook-modal";
 import { WebhookDeliveryDrawer } from "../drawers/webhook-delivery-drawer";
 import { DOCS_URL } from "@/lib/links";
@@ -695,6 +696,7 @@ print(f"Settled on Stellar: {pull.tx_hash}")`;
                   <tr key={k.id} className="hover:bg-neutral-50/50 transition-colors">
                     <td className="py-3.5 px-4 font-semibold text-black">
                       {k.name}
+                      <div className="mt-1 flex flex-wrap gap-1">{(k.scopes ?? []).map(scope => <span key={scope} className={`rounded px-1.5 py-0.5 text-[10px] ${scope.endsWith(":admin") || scope.endsWith(":execute") ? "bg-amber-100 text-amber-800" : "bg-indigo-50 text-indigo-700"}`}>{scope}</span>)}</div>
                     </td>
 
                     <td className="py-3.5 px-4">
@@ -1520,6 +1522,7 @@ print(f"Settled on Stellar: {pull.tx_hash}")`;
         </div>
       </div>
 
+      <ApiPlayground keys={keys} />
       {/* Modals & Drawers */}
       <CreateApiKeyModal
         isOpen={isCreateKeyModalOpen}
