@@ -10,6 +10,7 @@ import React, {
 } from "react";
 
 export type NotificationStatus = "submitted" | "pending" | "confirmed" | "failed";
+export type NotificationSeverity = "info" | "success" | "warning" | "error";
 
 export interface TransactionNotification {
   id: string;
@@ -20,6 +21,7 @@ export interface TransactionNotification {
   network?: "testnet" | "public";
   timestamp: number;
   read: boolean;
+  severity?: NotificationSeverity;
 }
 
 interface NotificationContextType {
@@ -34,6 +36,7 @@ interface NotificationContextType {
     item: Omit<TransactionNotification, "id" | "timestamp" | "read">
   ) => void;
   markAllAsRead: () => void;
+  markAsRead: (id: string) => void;
   clearNotifications: () => void;
   dismissToast: (id: string) => void;
 }
@@ -93,6 +96,7 @@ export function NotificationProvider({
         id,
         timestamp: Date.now(),
         read: false,
+        severity: item.severity ?? (item.status === "failed" ? "error" : item.status === "confirmed" ? "success" : item.status === "pending" ? "warning" : "info"),
       };
 
       setNotifications((prev) => {
@@ -111,7 +115,7 @@ export function NotificationProvider({
       // Auto-dismiss confirmed/submitted toasts after 7 seconds
       setTimeout(() => {
         setToasts((current) => current.filter((t) => t.id !== id));
-      }, 7000);
+      }, 4000);
     },
     []
   );
@@ -127,6 +131,14 @@ export function NotificationProvider({
       return updated;
     });
   }, [saveNotifications]);
+
+  const markAsRead = useCallback((id: string) => {
+    setNotifications(prev => {
+      const updated = prev.map(item => item.id === id ? { ...item, read: true } : item);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(updated)); } catch { /* storage optional */ }
+      return updated;
+    });
+  }, []);
 
   const clearNotifications = useCallback(() => {
     saveNotifications([]);
@@ -149,13 +161,14 @@ export function NotificationProvider({
     const handleTxEvent = (event: Event) => {
       const customEvent = event as CustomEvent;
       if (customEvent.detail) {
-        const { title, message, status, txHash, network } = customEvent.detail;
+        const { title, message, status, txHash, network, severity } = customEvent.detail;
         addNotification({
           title: title || "Transaction Settled",
           message: message || "On-chain pull settlement confirmed.",
           status: status || "confirmed",
           txHash,
           network: network || "testnet",
+          severity,
         });
       }
     };
@@ -164,12 +177,12 @@ export function NotificationProvider({
     window.addEventListener("orbit:notification", handleTxEvent);
 
     // Optional WebSocket listener for live backend confirmations
-    const wsUrl =
-      process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001/ws/events";
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
     let ws: WebSocket | null = null;
     let reconnectTimer: NodeJS.Timeout | null = null;
 
     const connectWs = () => {
+      if (!wsUrl) return;
       try {
         ws = new WebSocket(wsUrl);
         ws.onmessage = (event) => {
@@ -209,7 +222,7 @@ export function NotificationProvider({
       }
     };
 
-    connectWs();
+    if (wsUrl) connectWs();
 
     return () => {
       window.removeEventListener("orbit:tx_settled", handleTxEvent);
@@ -234,6 +247,7 @@ export function NotificationProvider({
         toggleDrawer,
         addNotification,
         markAllAsRead,
+        markAsRead,
         clearNotifications,
         dismissToast,
       }}
