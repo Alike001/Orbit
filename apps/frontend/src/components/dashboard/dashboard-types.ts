@@ -55,7 +55,7 @@ export interface SubscriberRecord {
   planName: string;
   amount: number;
   network: NetworkId;
-  status: "active" | "pending_pull" | "past_due" | "cancelled";
+  status: "active" | "pending_pull" | "past_due" | "cancelled" | "paused" | "churned";
   nextPullDate: string;
   totalSettled: number;
   joinedDate: string;

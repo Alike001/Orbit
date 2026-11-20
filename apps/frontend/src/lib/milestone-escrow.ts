@@ -107,7 +107,7 @@ export function encodeMilestoneStages(stages: MilestoneStageDraft[]): xdr.ScVal 
     new xdr.ScMapEntry({ key: symbol("deliverable_url"), val: stringVal(stage.deliverableUrl) }),
     new xdr.ScMapEntry({ key: symbol("due_timestamp"), val: u64(Math.floor(Date.parse(stage.dueDate) / 1000)) }),
     new xdr.ScMapEntry({ key: symbol("title"), val: stringVal(stage.title.trim()) }),
-  ]))));
+  ])));
 }
 
 async function connectedFreighter(): Promise<string> {
@@ -197,7 +197,10 @@ export async function readMilestoneEscrow(id: string): Promise<LiveMilestoneProj
     .addOperation(new Contract(MILESTONE_CONTRACT_ID).call("get_milestone_project", u64(id)))
     .setTimeout(30).build();
   const simulated = await server.simulateTransaction(tx);
-  if (!simulated.result?.retval) throw new Error(simulated.error || "Could not read this project on-chain.");
+  if (!rpc.Api.isSimulationSuccess(simulated) || !simulated.result?.retval) {
+    const errorMsg = "error" in simulated ? String(simulated.error) : "Could not read this project on-chain.";
+    throw new Error(errorMsg);
+  }
   const result = scValToNative(simulated.result.retval) as Record<string, unknown> | null;
   if (!result) return null;
   const stages = (result.stages as Array<Record<string, unknown>> || []).map((stage) => ({
