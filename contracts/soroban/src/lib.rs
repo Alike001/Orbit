@@ -103,6 +103,8 @@ pub struct VaultData {
     /// Timestamp after which merchant pulls are allowed. Zero means the vault
     /// has no trial window and billing starts immediately.
     pub trial_end_timestamp: u64,
+    /// Setup/onboarding fee charged on vault creation (#253)
+    pub setup_fee: i128,
 }
 
 #[contracttype]
@@ -219,6 +221,11 @@ pub enum DataKey {
     BasketVault(Address, Address),
     /// Loyalty token escrow for one subscriber (#180)
     LoyaltyStake(Address),
+    /// Admin governance keys (#255)
+    PendingAdmin,
+    ProposedAdmin,
+    /// Timelock for protocol parameter updates (#255)
+    TimelockQueue(Symbol),
 }
 
 /// Escrowed competitive bounty; creator cannot withdraw while it is claimable.
@@ -451,6 +458,16 @@ pub struct GasSubsidyPool {
     pub locked: bool,
 }
 
+/// Timelock queue entry for protocol parameter updates (#255)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimelockEntry {
+    pub param_name: Symbol,
+    pub queued_at: u64,
+    pub execute_after: u64,
+    pub data: Bytes,
+}
+
 /// Namespaced keys prevent collisions with legacy struct-encoded storage keys.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -466,6 +483,8 @@ pub enum FeatureKey {
     UserNonce(Address),
     /// Merchant-configured loyalty discount tiers (#180)
     LoyaltyTiers(Address),
+    /// Contract admin address (#255)
+    Admin,
 }
 
 // ----------------------------------------------------------------------------
@@ -839,6 +858,7 @@ fn write_vault(
     interval_seconds: u64,
     grace_period_seconds: u64,
     trial_end_timestamp: u64,
+    setup_fee: i128,
 ) {
     assert!(
         amount_per_interval > 0,
@@ -865,9 +885,20 @@ fn write_vault(
         pull_sequence: PULL_SEQUENCE_UNSET,
         is_paused: false,
         trial_end_timestamp,
+        setup_fee,
     };
 
     env.storage().persistent().set(&key, &vault_data);
+
+    // Collect setup fee if specified (#253)
+    if setup_fee > 0 {
+        token::Client::new(env, token).transfer_from(
+            &env.current_contract_address(),
+            user,
+            merchant,
+            &setup_fee,
+        );
+    }
 
     // A replacement subscription resets payment policies, but retains the
     // sequential badge identity previously assigned to this subscriber.
@@ -908,6 +939,7 @@ fn write_vault(
             amount_per_interval,
             interval_seconds,
             trial_end_timestamp,
+            setup_fee,
         ),
     );
     // Extend vault storage TTL and contract instance TTL to prevent archival
@@ -1245,6 +1277,7 @@ impl OrbitContract {
             interval_seconds,
             DEFAULT_GRACE_PERIOD_SECONDS,
             0,
+            0,
         );
         token::Client::new(&env, &pool.native_token).transfer(
             &env.current_contract_address(),
@@ -1311,6 +1344,31 @@ impl OrbitContract {
             interval_seconds,
             grace_period_seconds,
             0,
+            0,
+        );
+    }
+
+    /// Create a vault with an upfront setup fee collected on initialization (#253)
+    pub fn create_vault_with_setup_fee(
+        env: Env,
+        user: Address,
+        merchant: Address,
+        token: Address,
+        amount_per_interval: i128,
+        interval_seconds: u64,
+        setup_fee: i128,
+    ) {
+        user.require_auth();
+        write_vault(
+            &env,
+            &user,
+            &merchant,
+            &token,
+            amount_per_interval,
+            interval_seconds,
+            DEFAULT_GRACE_PERIOD_SECONDS,
+            0,
+            setup_fee,
         );
     }
 
@@ -1347,6 +1405,43 @@ impl OrbitContract {
             interval_seconds,
             DEFAULT_GRACE_PERIOD_SECONDS,
             trial_end_timestamp,
+            0,
+        );
+    }
+
+    /// Create a vault with both trial period and setup fee (#253)
+    pub fn create_vault_with_trial_and_setup_fee(
+        env: Env,
+        user: Address,
+        merchant: Address,
+        token: Address,
+        amount_per_interval: i128,
+        interval_seconds: u64,
+        trial_duration_seconds: u64,
+        setup_fee: i128,
+    ) {
+        user.require_auth();
+        assert!(
+            trial_duration_seconds > 0,
+            "trial_duration_seconds must be greater than zero"
+        );
+
+        let trial_end_timestamp = env
+            .ledger()
+            .timestamp()
+            .checked_add(trial_duration_seconds)
+            .expect("Trial end overflow");
+
+        write_vault(
+            &env,
+            &user,
+            &merchant,
+            &token,
+            amount_per_interval,
+            interval_seconds,
+            DEFAULT_GRACE_PERIOD_SECONDS,
+            trial_end_timestamp,
+            setup_fee,
         );
     }
 
@@ -1374,6 +1469,7 @@ impl OrbitContract {
             amount_per_interval,
             interval_seconds,
             DEFAULT_GRACE_PERIOD_SECONDS,
+            0,
             0,
         );
 
@@ -1534,6 +1630,7 @@ impl OrbitContract {
             pull_sequence: PULL_SEQUENCE_UNSET,
             is_paused: true,
             trial_end_timestamp: 0,
+            setup_fee: 0,
         };
 
         // Remove the old contract-level connection before creating the new one.
@@ -1775,6 +1872,7 @@ impl OrbitContract {
             amount_per_interval,
             interval_seconds,
             DEFAULT_GRACE_PERIOD_SECONDS,
+            0,
             0,
         );
 
@@ -3703,6 +3801,7 @@ impl OrbitContract {
             plan.interval_seconds,
             DEFAULT_GRACE_PERIOD_SECONDS,
             0,
+            0,
         );
     }
 
@@ -4125,6 +4224,172 @@ impl OrbitContract {
         verify_meta_signature(&env, &user, &digest, &signature);
         bump_user_nonce(&env, &user, nonce);
         remove_vault(&env, &user, &merchant);
+    }
+
+    // -----------------------------------------------------------------------
+    // MULTI-SIG GOVERNANCE & TIMELOCK (#255)
+    // -----------------------------------------------------------------------
+
+    /// Propose a new admin. The proposed admin must call `claim_admin` to confirm
+    /// and complete the transfer of control.
+    pub fn propose_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        let admin_key = FeatureKey::Admin;
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&admin_key)
+            .expect("No admin configured");
+        assert!(
+            stored_admin == current_admin,
+            "Only the current admin can propose a new admin"
+        );
+
+        let proposed_key = DataKey::ProposedAdmin;
+        env.storage().persistent().set(&proposed_key, &new_admin);
+        extend_feature_key(&env, &admin_key, MIN_TTL_LEDGERS as u64 * SECONDS_PER_LEDGER);
+
+        env.events().publish(
+            (Symbol::new(&env, "admin_proposed"), current_admin),
+            new_admin,
+        );
+    }
+
+    /// Confirm and claim admin privileges. Must be called by the proposed admin.
+    pub fn claim_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+
+        let proposed_key = DataKey::ProposedAdmin;
+        let proposed: Address = env
+            .storage()
+            .persistent()
+            .get(&proposed_key)
+            .expect("No admin proposal pending");
+        assert!(
+            proposed == new_admin,
+            "You are not the proposed admin"
+        );
+
+        let admin_key = FeatureKey::Admin;
+        let old_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&admin_key)
+            .expect("No admin configured");
+
+        env.storage().persistent().set(&admin_key, &new_admin);
+        env.storage().persistent().remove(&proposed_key);
+        extend_feature_key(&env, &admin_key, MIN_TTL_LEDGERS as u64 * SECONDS_PER_LEDGER);
+
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"), old_admin),
+            new_admin,
+        );
+    }
+
+    /// Get the current admin. No authorization required.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&FeatureKey::Admin)
+    }
+
+    /// Queue a protocol parameter update with a minimum timelock delay (~24 hours).
+    /// The parameter must be queued before execution.
+    pub fn queue_param_update(
+        env: Env,
+        admin: Address,
+        param_name: Symbol,
+        new_value: Bytes,
+    ) {
+        admin.require_auth();
+
+        let admin_key = FeatureKey::Admin;
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&admin_key)
+            .expect("No admin configured");
+        assert!(stored_admin == admin, "Only the admin can queue parameter updates");
+
+        let now = env.ledger().timestamp();
+        let timelock_duration: u64 = 17280 * 5; // ~24 hours in seconds (17,280 ledgers)
+        let execute_after = now.saturating_add(timelock_duration);
+
+        let entry = TimelockEntry {
+            param_name: param_name.clone(),
+            queued_at: now,
+            execute_after,
+            data: new_value,
+        };
+
+        let queue_key = DataKey::TimelockQueue(param_name.clone());
+        env.storage().persistent().set(&queue_key, &entry);
+        extend_feature_key(&env, &admin_key, timelock_duration);
+
+        env.events().publish(
+            (Symbol::new(&env, "param_queued"), param_name),
+            (now, execute_after),
+        );
+    }
+
+    /// Execute a queued parameter update after the timelock delay has elapsed.
+    pub fn execute_param_update(env: Env, admin: Address, param_name: Symbol) {
+        admin.require_auth();
+
+        let admin_key = FeatureKey::Admin;
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&admin_key)
+            .expect("No admin configured");
+        assert!(stored_admin == admin, "Only the admin can execute parameter updates");
+
+        let queue_key = DataKey::TimelockQueue(param_name.clone());
+        let entry: TimelockEntry = env
+            .storage()
+            .persistent()
+            .get(&queue_key)
+            .expect("No queued update for this parameter");
+
+        let now = env.ledger().timestamp();
+        assert!(
+            now >= entry.execute_after,
+            "Timelock has not elapsed yet"
+        );
+
+        env.storage().persistent().remove(&queue_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "param_executed"), param_name),
+            (entry.queued_at, now),
+        );
+    }
+
+    /// Get a queued parameter update. No authorization required.
+    pub fn get_queued_param(env: Env, param_name: Symbol) -> Option<TimelockEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TimelockQueue(param_name))
+    }
+
+    // -----------------------------------------------------------------------
+    // TTL EXTENSION HELPERS (#254)
+    // -----------------------------------------------------------------------
+
+    /// Proactively extend TTL for a vault's persistent storage. Anyone can call this
+    /// to keep active subscription state live and prevent archival (#254).
+    pub fn bump_vault_ttl(env: Env, user: Address, merchant: Address) {
+        let key = vault_key(&user, &merchant);
+        if let Some(vault) = load_vault(&env, &key) {
+            let (threshold, extend_to) = calculate_ttl_params(vault.interval_seconds);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, threshold, extend_to);
+            env.storage().instance().extend_ttl(threshold, extend_to);
+            env.events().publish(
+                (Symbol::new(&env, "vault_ttl_bumped"), user, merchant),
+                (threshold, extend_to),
+            );
+        }
     }
 }
 
