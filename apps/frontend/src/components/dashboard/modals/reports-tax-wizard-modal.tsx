@@ -1,5 +1,7 @@
 "use client";
 
+import { useDialogFocus } from "./use-dialog-focus";
+
 import React, { useMemo, useState } from "react";
 import { SettledExportsPanel } from "../settled-exports-panel";
 import {
@@ -370,10 +372,14 @@ export function ReportsTaxWizardModal({
     document.body.removeChild(link);
   };
 
+  const dialogRef = useDialogFocus(isOpen, onClose);
+
   if (!isOpen) return null;
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
       role="dialog"
       aria-modal="true"

@@ -1,4 +1,15 @@
 export type OrbitTheme = 'dark' | 'light' | 'auto';
+export interface OrbitBrandTheme {
+  mode?: 'light' | 'dark';
+  primaryColor?: string;
+  backgroundColor?: string;
+  borderRadius?: OrbitBorderRadius;
+  logoUrl?: string;
+  fontFamily?: string;
+}
+export interface OrbitCheckoutSuccessMessage { type: 'ORBIT_CHECKOUT_SUCCESS'; vaultId: string; transactionHash: string; timestamp: string; nonce: string; }
+export interface OrbitCheckoutFailureMessage { type: 'ORBIT_CHECKOUT_FAILED'; code: string; message: string; nonce: string; }
+export interface OrbitCheckoutClosedMessage { type: 'ORBIT_CHECKOUT_CLOSED'; nonce: string; }
 export type OrbitBorderRadius = 'none' | 'sm' | 'md' | 'lg' | 'full';
 export interface OrbitCustomClasses { modal?: string; header?: string; button?: string; }
 
@@ -27,7 +38,7 @@ export interface OrbitCheckoutProps {
   tokenContractId?: string;
   rpcUrl?: string;
   networkPassphrase?: string;
-  theme?: OrbitTheme;
+  theme?: OrbitTheme | OrbitBrandTheme;
   accentColor?: string;
   borderRadius?: OrbitBorderRadius;
   fontFamily?: string;

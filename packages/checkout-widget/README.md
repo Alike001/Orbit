@@ -77,7 +77,7 @@ A coupon is cleared automatically if the selected plan changes (switching preset
 
 ## Lifecycle events
 
-Events are sent to the embedding parent with `window.postMessage`. Set explicit `allowedOrigins` values for cross-origin embeds.
+The checkout's typed financial callbacks use a verified parent-window handshake (documented below). Set explicit `allowedOrigins` values for cross-origin embeds; unverified parents receive no lifecycle callbacks.
 
 | Event | Payload |
 |---|---|
@@ -89,11 +89,70 @@ Events are sent to the embedding parent with `window.postMessage`. Set explicit 
 | `orbit:bridge_funds_arrived` | `{ type, address, balance }` |
 
 ```js
-window.addEventListener('message', ({ data, origin }) => {
-  if (data.type === 'orbit:subscribed') provisionCustomer(data.planId, data.txHash, origin);
+// See the authenticated ORBIT_CHECKOUT_* callback sample below.
+// Never provision from an unauthenticated client-side message.
+```
+
+
+## Merchant branding, balance diagnostics, and iframe security (#238–#240)
+
+### Brand configuration
+
+`theme` also accepts a scoped object. The legacy string `theme="auto"`, `accentColor`, `borderRadius`, and `fontFamily` props remain supported. Missing values fall back to Orbit defaults; invalid CSS colors and non-HTTP(S) logo URLs are ignored.
+
+```jsx
+<OrbitCheckout
+  planId="your-plan-id"
+  theme={{
+    mode: "dark",
+    primaryColor: "#6366f1",
+    backgroundColor: "#171923",
+    borderRadius: "md",
+    fontFamily: "Inter, sans-serif",
+    logoUrl: "https://merchant.example/logo.svg",
+  }}
+  allowedOrigins={["https://merchant.example"]}
+/>
+```
+
+All `--orbit-*` custom properties are written on the `.orbit-checkout-root` element, not the host document or iframe parent's root. Merchants can use `mode: "light"` or `"dark"`.
+
+### USDC balance and trustline pre-flight
+
+After wallet connection, Horizon is queried for the **specific network's USDC issuer**. The inline status distinguishes uninitialized wallets, missing/unauthorized trustlines, insufficient USDC (with an exact 7-decimal shortfall), and ready accounts. The main USDC signing button is disabled while verification is pending or unmet; "Recheck USDC" refreshes the result. Add the asset trustline using your wallet's asset management UI or fund the wallet, then recheck. This is a read-only check: Orbit does not add a trustline or auto-sign a transaction. Non-USDC swap checkout retains its separate swap-quote validation. There is a second live check on click, before any signer is called, to reduce stale-balance errors. Network/RPC availability can still change between the check and final submission.
+
+### Secure iframe postMessage handshake
+
+For a cross-origin embedding, pass the exact registered merchant origin via `allowedOrigins` (do not use `*`). The parent page **must** install its listener before the iframe loads, verify `event.origin` and `event.source`, then echo the per-mount nonce in `ORBIT_CHECKOUT_ACK`. Before a valid acknowledgment the checkout emits no success/failure/close callback.
+
+```js
+const iframe = document.querySelector('#orbit-checkout');
+const checkoutOrigin = 'https://checkout.orbit.example'; // replace with your deployed checkout origin
+window.addEventListener('message', (event) => {
+  if (event.origin !== checkoutOrigin || event.source !== iframe.contentWindow) return;
+  const message = event.data;
+  if (message?.type === 'ORBIT_CHECKOUT_HELLO' && typeof message.nonce === 'string') {
+    iframe.contentWindow.postMessage({
+      type: 'ORBIT_CHECKOUT_ACK',
+      nonce: message.nonce,
+    }, checkoutOrigin);
+    return;
+  }
+  if (message?.type === 'ORBIT_CHECKOUT_SUCCESS') {
+    // { type, vaultId, transactionHash, timestamp, nonce }
+    // Always verify the transaction with your backend before provisioning.
+    console.info('Checkout completed', message.transactionHash);
+  } else if (message?.type === 'ORBIT_CHECKOUT_FAILED') {
+    // { type, code, message, nonce }
+    console.error(message.code, message.message);
+  } else if (message?.type === 'ORBIT_CHECKOUT_CLOSED') {
+    // { type, nonce }
+    console.info('Checkout dismissed');
+  }
 });
 ```
 
+The parent must not trust iframe callbacks alone as a payment proof: verify the Stellar transaction, merchant, and vault on the server. The listener in the checkout checks both the parent window identity and exact allowed origin, rejects wrong nonces, validates outgoing event payloads, and tears down on unmount. Use a dedicated registered merchant origin to avoid granting sibling applications on the same origin access.
 
 ## Desktop-to-mobile QR handover (#210)
 

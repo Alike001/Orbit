@@ -45,7 +45,7 @@ export default async function RootLayout({
   const locale = isLocale(cookieLocale) ? cookieLocale : defaultLocale;
 
   return (
-    <html lang={locale}>
+    <html lang={locale} suppressHydrationWarning>
       <head>
         <link rel="icon" href="/favicon-badge.png?v=3" type="image/png" />
         <link rel="shortcut icon" href="/favicon-badge.png?v=3" type="image/png" />
